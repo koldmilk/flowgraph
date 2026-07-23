@@ -23,6 +23,7 @@
 	import NodeContextMenu from './NodeContextMenu.svelte';
 	import PaneContextMenu from './PaneContextMenu.svelte';
 	import StoreBridge from './StoreBridge.svelte';
+	import NodePanel from './NodePanel.svelte';
 	import { nodeCatalog, type SignalNodeType } from './nodeCatalog';
 	import { DEFAULT_COMMENT_COLOR } from './commentColors';
 
@@ -44,19 +45,19 @@
 			id: 'camera-1',
 			type: 'source',
 			position: { x: 0, y: 120 },
-			data: { label: 'Camera 1', subtitle: 'SDI Out' }
+			data: { label: 'Source', description: 'Description' }
 		},
 		{
 			id: 'router-1',
 			type: 'sourceDestination',
 			position: { x: 340, y: 120 },
-			data: { label: 'Router 1', subtitle: 'Matrix Switch' }
+			data: { label: 'Source + Destination', description: 'Description' }
 		},
 		{
 			id: 'monitor-1',
 			type: 'destination',
 			position: { x: 680, y: 120 },
-			data: { label: 'Program Monitor', subtitle: 'SDI In' }
+			data: { label: 'Destination', description: 'Description' }
 		}
 	]);
 
@@ -65,12 +66,27 @@
 		{ id: 'router-1->monitor-1', source: 'router-1', target: 'monitor-1', animated: true }
 	]);
 
-	const { screenToFlowPosition, deleteElements } = useSvelteFlow();
+	const { screenToFlowPosition, deleteElements, getInternalNode } = useSvelteFlow();
 	// The live store arrives via <StoreBridge> (a child of <SvelteFlow>); see that component for why.
 	let store = $state<ReturnType<typeof useStore> | null>(null);
 
 	type NodeMenuState = { screenX: number; screenY: number; nodeIds: string[] };
 	let nodeMenu = $state<NodeMenuState | null>(null);
+
+	// --- Attributes panel ---------------------------------------------------------------------
+	// The panel edits a single selected signal node; comment/reroute and multi-selections show an
+	// empty state instead.
+	let panelCollapsed = $state(false);
+	const selectedNodes = $derived(nodes.filter((n) => n.selected));
+	const panelNode = $derived(
+		selectedNodes.length === 1 && selectedNodes[0].type != null && selectedNodes[0].type in nodeCatalog
+			? selectedNodes[0]
+			: null
+	);
+
+	function updateNodeData(id: string, data: Record<string, unknown>) {
+		nodes = nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...data } } : n));
+	}
 
 	// Right-clicking a node opens a menu to delete it. If the clicked node is part of a
 	// multi-selection, the whole selection is targeted; otherwise just the clicked node.
@@ -84,6 +100,36 @@
 	function deleteNodes(ids: string[]) {
 		// deleteElements also removes any edges connected to the removed nodes.
 		deleteElements({ nodes: ids.map((id) => ({ id })) });
+	}
+
+	// --- Convert node type -------------------------------------------------------------------
+	// Which signal types among the targeted nodes can still be converted to. Only the three
+	// signal node types are convertible (reroute/comment are excluded). When every targeted
+	// signal node already shares one type, that type is dropped (nothing to convert to).
+	function convertTypesFor(ids: string[]): SignalNodeType[] {
+		const targeted = nodes.filter((n) => ids.includes(n.id) && n.type != null && n.type in nodeCatalog);
+		if (targeted.length === 0) return [];
+		const all: SignalNodeType[] = ['source', 'destination', 'sourceDestination'];
+		const present = new Set(targeted.map((n) => n.type));
+		return present.size === 1 ? all.filter((t) => t !== [...present][0]) : all;
+	}
+
+	// Swap the type of every targeted signal node, keeping its label/position. Edges the new type
+	// can no longer carry are pruned: a node that loses its output drops outgoing wires, one that
+	// loses its input drops incoming wires.
+	function convertNodes(ids: string[], toType: SignalNodeType) {
+		const converted = new Set(
+			nodes.filter((n) => ids.includes(n.id) && n.type != null && n.type in nodeCatalog).map((n) => n.id)
+		);
+		if (converted.size === 0) return;
+		const hasSource = toType !== 'destination'; // source + sourceDestination emit
+		const hasTarget = toType !== 'source'; // destination + sourceDestination receive
+		nodes = nodes.map((n) => (converted.has(n.id) ? { ...n, type: toType } : n));
+		edges = edges.filter((e) => {
+			if (converted.has(e.source) && !hasSource) return false;
+			if (converted.has(e.target) && !hasTarget) return false;
+			return true;
+		});
 	}
 
 	// --- Pane (empty space) context menu -------------------------------------------------------
@@ -125,7 +171,7 @@
 				id: crypto.randomUUID(),
 				type,
 				position: { x: flowX - 95, y: flowY - 39 },
-				data: { label: `New ${nodeCatalog[type].label}` }
+				data: { label: nodeCatalog[type].label, description: 'Description' }
 			}
 		];
 	}
@@ -257,7 +303,7 @@
 				id,
 				type,
 				position: { x: flowX - 95, y: flowY - 39 },
-				data: { label: `New ${nodeCatalog[type].label}` }
+				data: { label: nodeCatalog[type].label, description: 'Description' }
 			}
 		];
 
@@ -286,19 +332,49 @@
 		connectionMenu = null;
 	}
 
-	// Q aligns every selected node onto a shared horizontal axis, so their pins line up.
+	// Q aligns every selected node onto a shared horizontal axis, so their wires run dead straight.
 	function alignSelectedHorizontally() {
 		const selected = nodes.filter((node) => node.selected);
 		if (selected.length < 2) return;
+		const selectedIds = new Set(selected.map((n) => n.id));
 
-		// Align by each node's vertical CENTER -- that's where the input/output pins sit. Nodes have
-		// different heights, so aligning the top-left position.y (as before) left the pins off-axis.
-		const halfH = (n: Node) => (n.measured?.height ?? 0) / 2;
-		const targetCenterY =
-			selected.reduce((sum, node) => sum + node.position.y + halfH(node), 0) / selected.length;
+		// A handle's connection point (where the spline attaches) is its vertical middle; handleBounds
+		// are node-relative + unscaled.
+		const centerOf = (handles: { y: number; height: number }[]) =>
+			handles.reduce((sum, h) => sum + h.y + h.height / 2, 0) / handles.length;
+
+		// Align by the PIN that actually carries a wire to another selected node, so that wire runs
+		// straight -- not the box center. For a chain of single-pin nodes this is simply "the pin," but
+		// for a multi-pin node it picks only the pin(s) wired into the selection and ignores idle ones,
+		// so the connecting spline lines up regardless of the node's shape. Falls back to averaging all
+		// pins (then the box center) if a selected node has no wire to the rest of the selection.
+		const pinOffsetY = (n: Node): number => {
+			const bounds = getInternalNode(n.id)?.internals.handleBounds;
+			const sources = bounds?.source ?? [];
+			const targets = bounds?.target ?? [];
+
+			const connected = new Set<{ y: number; height: number }>();
+			for (const e of edges) {
+				if (e.source === n.id && selectedIds.has(e.target)) {
+					const match = sources.filter((s) => e.sourceHandle == null || s.id === e.sourceHandle);
+					(match.length ? match : sources).forEach((h) => connected.add(h));
+				} else if (e.target === n.id && selectedIds.has(e.source)) {
+					const match = targets.filter((t) => e.targetHandle == null || t.id === e.targetHandle);
+					(match.length ? match : targets).forEach((h) => connected.add(h));
+				}
+			}
+
+			if (connected.size) return centerOf([...connected]);
+			const all = [...sources, ...targets];
+			if (all.length) return centerOf(all);
+			return (n.measured?.height ?? 0) / 2;
+		};
+
+		const targetPinY =
+			selected.reduce((sum, node) => sum + node.position.y + pinOffsetY(node), 0) / selected.length;
 		nodes = nodes.map((node) =>
 			node.selected
-				? { ...node, position: { ...node.position, y: targetCenterY - halfH(node) } }
+				? { ...node, position: { ...node.position, y: targetPinY - pinOffsetY(node) } }
 				: node
 		);
 	}
@@ -771,6 +847,13 @@
 		<Controls showLock={false} />
 	</SvelteFlow>
 
+	<NodePanel
+		node={panelNode}
+		selectedCount={selectedNodes.length}
+		bind:collapsed={panelCollapsed}
+		onupdate={updateNodeData}
+	/>
+
 	{#if connectionMenu}
 		<ConnectionMenu
 			x={connectionMenu.screenX}
@@ -786,6 +869,11 @@
 			x={nodeMenu.screenX}
 			y={nodeMenu.screenY}
 			count={nodeMenu.nodeIds.length}
+			convertTypes={convertTypesFor(nodeMenu.nodeIds)}
+			onconvert={(type) => {
+				convertNodes(nodeMenu!.nodeIds, type);
+				nodeMenu = null;
+			}}
 			canPaste={!!clipboard && clipboard.nodes.length > 0}
 			oncopy={() => {
 				copyIds(nodeMenu!.nodeIds);
@@ -849,6 +937,8 @@
 	:global(.signal-flow .svelte-flow__edge-path) {
 		stroke: #80848e;
 		stroke-width: 1.5;
+		/* Soften the dash ends: a subtle bevel on the hard rectangles, small vs. the 8px dash length. */
+		stroke-linecap: round;
 	}
 	:global(.signal-flow .svelte-flow__edge.selected .svelte-flow__edge-path) {
 		stroke: #5865f2;
@@ -864,6 +954,7 @@
 	}
 	.reconnect-path {
 		stroke-dasharray: 8 6;
+		stroke-linecap: round;
 		animation: signal-flow-dash 0.8s linear infinite;
 	}
 	@keyframes signal-flow-dash {

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { NodeResizer, useSvelteFlow, type NodeProps, type Node } from '@xyflow/svelte';
-	import { commentColors, hexToRgba, DEFAULT_COMMENT_COLOR } from '../commentColors';
+	import { NodeResizeControl, useSvelteFlow, type NodeProps, type Node } from '@xyflow/svelte';
+	import { hexToRgba, DEFAULT_COMMENT_COLOR } from '../commentColors';
 
 	type CommentData = { label?: string; color?: string };
 	let { id, data, selected }: NodeProps<Node<CommentData>> = $props();
@@ -12,7 +12,6 @@
 
 	let editing = $state(false);
 	let draft = $state('');
-	let showPalette = $state(false);
 
 	// Autofocus + select-all when the label input mounts, so a double-click drops straight into typing.
 	function autofocus(node: HTMLInputElement) {
@@ -22,7 +21,6 @@
 
 	function startEdit() {
 		draft = label;
-		showPalette = false;
 		editing = true;
 	}
 
@@ -42,38 +40,28 @@
 		}
 	}
 
-	function pickColor(hex: string) {
-		updateNodeData(id, { color: hex });
-		showPalette = false;
-	}
+	// Derived tints exposed as CSS variables so the frame, title bar, and resize grip all
+	// draw from the same palette and stay consistent selected vs. unselected.
+	const vars = $derived(
+		[
+			`--c-solid: ${color}`,
+			`--c-border: ${hexToRgba(color, selected ? 0.9 : 0.45)}`,
+			`--c-fill: ${hexToRgba(color, selected ? 0.08 : 0.05)}`,
+			`--c-bar: ${hexToRgba(color, selected ? 0.92 : 0.7)}`
+		].join('; ')
+	);
 </script>
 
-<!-- Unreal-style comment box: a resizable, colored frame that groups nodes. Only the title bar and
-     resize handles take pointer events (see global CSS) so nodes underneath stay clickable and the
+<!-- Unreal-style comment box: a resizable, tinted frame that groups nodes. Only the title bar and
+     resize grip take pointer events (see global CSS) so nodes underneath stay clickable and the
      canvas still pans through the body. -->
-<div class="comment-root">
-	<NodeResizer
-		minWidth={160}
-		minHeight={90}
-		isVisible={selected}
-		{color}
-		handleClass="comment-interactive"
-		lineClass="comment-interactive"
-	/>
+<div class="comment-root" class:selected style={vars} role="presentation">
+	<!-- Tinted frame filling the whole node. -->
+	<div class="comment-frame"></div>
 
-	<!-- Translucent frame filling the whole node. -->
-	<div
-		class="comment-frame"
-		style="border-color: {hexToRgba(color, selected ? 0.95 : 0.55)}; background: {hexToRgba(
-			color,
-			0.07
-		)};"
-	></div>
-
-	<!-- Title bar: drag handle + label + color picker. -->
+	<!-- Title bar: drag handle + editable label. -->
 	<div
 		class="comment-titlebar comment-drag-handle comment-interactive"
-		style="background: {hexToRgba(color, 0.88)};"
 		ondblclick={startEdit}
 		role="presentation"
 	>
@@ -90,33 +78,16 @@
 		{:else}
 			<span class="comment-label">{label}</span>
 		{/if}
-
-		<button
-			type="button"
-			class="comment-color-btn"
-			style="background: {color};"
-			title="Change color"
-			onpointerdown={(e) => e.stopPropagation()}
-			onclick={() => (showPalette = !showPalette)}
-			aria-label="Change comment color"
-		></button>
-
-		{#if showPalette}
-			<div class="comment-palette" onpointerdown={(e) => e.stopPropagation()} role="presentation">
-				{#each commentColors as c (c.hex)}
-					<button
-						type="button"
-						class="comment-swatch"
-						class:selected={c.hex === color}
-						style="background: {c.hex};"
-						title={c.name}
-						aria-label={c.name}
-						onclick={() => pickColor(c.hex)}
-					></button>
-				{/each}
-			</div>
-		{/if}
 	</div>
+
+	<!-- Always-visible filled corner grip that scales with the frame (autoScale off). -->
+	<NodeResizeControl
+		position="bottom-right"
+		minWidth={160}
+		minHeight={90}
+		autoScale={false}
+		class="comment-interactive comment-resize-handle"
+	/>
 </div>
 
 <style>
@@ -125,12 +96,21 @@
 		width: 100%;
 		height: 100%;
 	}
+
 	.comment-frame {
 		position: absolute;
 		inset: 0;
-		border: 2px solid;
-		border-radius: 10px;
+		border: 1.5px solid var(--c-border);
+		border-radius: 9px;
+		background: var(--c-fill);
+		transition:
+			border-color 120ms ease,
+			box-shadow 120ms ease;
 	}
+	.comment-root.selected .comment-frame {
+		box-shadow: 0 0 0 1px var(--c-border);
+	}
+
 	.comment-titlebar {
 		position: absolute;
 		top: 0;
@@ -138,68 +118,61 @@
 		right: 0;
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		height: 30px;
-		padding: 0 8px;
+		height: 26px;
+		padding: 0 10px;
+		background: var(--c-bar);
 		border-radius: 8px 8px 0 0;
 		cursor: grab;
 	}
 	.comment-titlebar:active {
 		cursor: grabbing;
 	}
+
 	.comment-label {
 		flex: 1;
 		min-width: 0;
 		overflow: hidden;
 		white-space: nowrap;
 		text-overflow: ellipsis;
-		font-size: 13px;
+		font-size: 12.5px;
 		font-weight: 600;
+		letter-spacing: 0.01em;
 		color: #ffffff;
-		text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+		text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 	}
 	.comment-input {
 		flex: 1;
 		min-width: 0;
-		background: rgba(0, 0, 0, 0.25);
-		border: 1px solid rgba(255, 255, 255, 0.5);
+		background: rgba(0, 0, 0, 0.28);
+		border: 1px solid rgba(255, 255, 255, 0.55);
 		border-radius: 4px;
-		padding: 1px 4px;
-		font-size: 13px;
+		padding: 1px 5px;
+		font-size: 12.5px;
 		font-weight: 600;
 		color: #ffffff;
 		outline: none;
 	}
-	.comment-color-btn {
-		flex: none;
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		border: 2px solid rgba(255, 255, 255, 0.7);
-		cursor: pointer;
+
+	/* Resize grip: a solid filled triangle nested just inside the frame's bottom-right corner,
+	   with its radius matched to the frame so it reads as the corner filling in. The compound
+	   selector (three classes) out-specifies the library's `.svelte-flow__resize-control.handle`. */
+	:global(.svelte-flow__resize-control.handle.comment-resize-handle) {
+		width: 22px;
+		height: 22px;
+		/* Nest 1.5px inside the border so the frame edge stays visible around the grip. */
+		translate: calc(-100% - 1.5px) calc(-100% - 1.5px);
+		z-index: 3; /* above the translucent frame so the fill isn't tinted by it */
+		border: none;
+		border-radius: 0 0 7px 0;
+		background: var(--c-border);
+		/* Mask clips the top-left half away, leaving the bottom-right triangle. */
+		-webkit-mask: linear-gradient(to bottom right, transparent 0 50%, #000 50% 100%);
+		mask: linear-gradient(to bottom right, transparent 0 50%, #000 50% 100%);
+		transition: background 120ms ease;
 	}
-	.comment-palette {
-		position: absolute;
-		top: 34px;
-		right: 4px;
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 6px;
-		padding: 8px;
-		background: #2b2d31;
-		border: 1px solid rgba(0, 0, 0, 0.4);
-		border-radius: 8px;
-		box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
-		z-index: 10;
-	}
-	.comment-swatch {
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		border: 2px solid transparent;
-		cursor: pointer;
-	}
-	.comment-swatch.selected {
-		border-color: #ffffff;
+	/* Selected or hovered: solid, with a soft white highlight fading from the corner tip. */
+	.comment-root.selected :global(.comment-resize-handle),
+	:global(.comment-resize-handle:hover) {
+		background: radial-gradient(circle at 100% 100%, #ffffff 0%, var(--c-solid) 75%);
 	}
 </style>

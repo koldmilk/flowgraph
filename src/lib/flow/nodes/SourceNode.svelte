@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps, type Node } from '@xyflow/svelte';
 	import NodeShell from './NodeShell.svelte';
-	import { handleClass } from './handleStyle';
+	import { handleClass, handleStyle } from './handleStyle';
+	import { defaultNodeColor } from '../nodeColors';
 
-	type SignalNodeData = { label: string; subtitle?: string };
+	type SignalNodeData = { label: string; description?: string; color?: string };
 
-	let { data, selected }: NodeProps<Node<SignalNodeData>> = $props();
+	let { id, data, selected }: NodeProps<Node<SignalNodeData>> = $props();
+
+	const color = $derived(data.color ?? defaultNodeColor.source);
 </script>
 
-<NodeShell label={data.label} subtitle={data.subtitle} accent="green" {selected}>
-	<Handle type="source" position={Position.Right} class={handleClass('green')} />
+<NodeShell {id} label={data.label} description={data.description} {color} {selected}>
+	<Handle type="source" position={Position.Right} class={handleClass} style={handleStyle(color)} />
 </NodeShell>
