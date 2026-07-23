@@ -9,7 +9,8 @@
 		node,
 		selectedCount,
 		collapsed = $bindable(false),
-		onupdate
+		onupdate,
+		onconvert
 	}: {
 		// The single selected signal node whose attributes we edit, or null when the selection
 		// isn't exactly one such node.
@@ -17,7 +18,11 @@
 		selectedCount: number;
 		collapsed?: boolean;
 		onupdate: (id: string, data: Record<string, unknown>) => void;
+		onconvert: (id: string, type: SignalNodeType) => void;
 	} = $props();
+
+	// The three convertible signal types, for the Type dropdown.
+	const signalTypes = Object.keys(nodeCatalog) as SignalNodeType[];
 
 	const label = $derived((node?.data?.label as string | undefined) ?? '');
 	const description = $derived((node?.data?.description as string | undefined) ?? '');
@@ -37,13 +42,17 @@
 	);
 
 	// Each attribute section can be collapsed independently via its +/- toggle.
-	let open = $state({ name: true, description: true, color: true });
+	let open = $state({ type: true, name: true, description: true, color: true });
+
+	// Custom (themed) dropdown for the Type selector — a native <select>'s option list can't be
+	// styled, so it renders square/light against our dark UI.
+	let typeMenuOpen = $state(false);
 </script>
 
-{#snippet sectionHeader(title: string, key: 'name' | 'description' | 'color')}
+{#snippet sectionHeader(title: string, key: 'type' | 'name' | 'description' | 'color')}
 	<button
 		type="button"
-		class="mb-1 flex w-full items-center text-[11px] font-semibold tracking-wide text-[#949ba4] uppercase hover:text-[#dbdee1]"
+		class="mb-2.5 flex w-full items-center text-[11px] font-semibold tracking-wide text-[#949ba4] uppercase hover:text-[#dbdee1]"
 		aria-expanded={open[key]}
 		onclick={() => (open[key] = !open[key])}
 	>
@@ -122,7 +131,7 @@
 					{/if}
 				</div>
 
-				<div class="block border-t border-white/10 pt-3">
+				<div class="mb-3 block border-t border-white/10 pt-3">
 					{@render sectionHeader('Color', 'color')}
 					{#if open.color}
 						<div class="flex flex-wrap gap-2">
@@ -139,6 +148,82 @@
 									style="background-color: {c.hex};"
 								></button>
 							{/each}
+						</div>
+					{/if}
+				</div>
+
+				<div class="block border-t border-white/10 pt-3">
+					{@render sectionHeader('Type', 'type')}
+					{#if open.type}
+						<div class="relative">
+							<button
+								type="button"
+								onclick={() => (typeMenuOpen = !typeMenuOpen)}
+								class="flex w-full items-center gap-2 rounded-md border bg-[#1e1f22] px-2 py-1.5 text-sm text-[#dbdee1] outline-none {typeMenuOpen
+									? 'border-[#5865f2]'
+									: 'border-black/30 hover:border-[#4e5058]'}"
+							>
+								<span
+									class="h-2.5 w-2.5 shrink-0 rounded-full"
+									style="background-color: {defaultNodeColor[node.type as SignalNodeType]};"
+								></span>
+								<span>{nodeCatalog[node.type as SignalNodeType].label}</span>
+								<svg
+									class="ml-auto h-4 w-4 text-[#949ba4] transition-transform {typeMenuOpen
+										? 'rotate-180'
+										: ''}"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+								>
+									<path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+								</svg>
+							</button>
+
+							{#if typeMenuOpen}
+								<!-- click-away backdrop -->
+								<button
+									type="button"
+									class="fixed inset-0 z-40 cursor-default"
+									aria-label="Close type menu"
+									onclick={() => (typeMenuOpen = false)}
+								></button>
+								<div
+									class="absolute top-full right-0 left-0 z-50 mt-1 rounded-lg border border-black/40 bg-[#2b2d31] p-1 shadow-2xl shadow-black/60"
+								>
+									{#each signalTypes as t (t)}
+										<button
+											type="button"
+											onclick={() => {
+												if (t !== node.type) onconvert(node.id, t);
+												typeMenuOpen = false;
+											}}
+											class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[#dbdee1] hover:bg-[#35373c] {t ===
+											node.type
+												? 'bg-[#35373c]'
+												: ''}"
+										>
+											<span
+												class="h-2.5 w-2.5 shrink-0 rounded-full"
+												style="background-color: {defaultNodeColor[t]};"
+											></span>
+											{nodeCatalog[t].label}
+											{#if t === node.type}
+												<svg
+													class="ml-auto h-4 w-4 text-[#949ba4]"
+													viewBox="0 0 24 24"
+													fill="none"
+													stroke="currentColor"
+													stroke-width="2"
+												>
+													<path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round" />
+												</svg>
+											{/if}
+										</button>
+									{/each}
+								</div>
+							{/if}
 						</div>
 					{/if}
 				</div>

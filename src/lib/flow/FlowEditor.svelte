@@ -25,6 +25,7 @@
 	import StoreBridge from './StoreBridge.svelte';
 	import NodePanel from './NodePanel.svelte';
 	import { nodeCatalog, type SignalNodeType } from './nodeCatalog';
+	import { defaultNodeColor } from './nodeColors';
 	import { DEFAULT_COMMENT_COLOR } from './commentColors';
 
 	const nodeTypes = {
@@ -124,7 +125,13 @@
 		if (converted.size === 0) return;
 		const hasSource = toType !== 'destination'; // source + sourceDestination emit
 		const hasTarget = toType !== 'source'; // destination + sourceDestination receive
-		nodes = nodes.map((n) => (converted.has(n.id) ? { ...n, type: toType } : n));
+		nodes = nodes.map((n) => {
+			if (!converted.has(n.id)) return n;
+			// Preserve the color the node is currently showing: an explicit data.color stays as-is; a
+			// node still on its type default gets that default baked in so converting doesn't recolor it.
+			const color = (n.data?.color as string | undefined) ?? defaultNodeColor[n.type as SignalNodeType];
+			return { ...n, type: toType, data: { ...n.data, color } };
+		});
 		edges = edges.filter((e) => {
 			if (converted.has(e.source) && !hasSource) return false;
 			if (converted.has(e.target) && !hasTarget) return false;
@@ -852,6 +859,7 @@
 		selectedCount={selectedNodes.length}
 		bind:collapsed={panelCollapsed}
 		onupdate={updateNodeData}
+		onconvert={(id, type) => convertNodes([id], type)}
 	/>
 
 	{#if connectionMenu}

@@ -33,6 +33,12 @@
 {/if}
 
 <style>
+	/* Break long unbroken strings so they wrap within the node/panel instead of overflowing. */
+	.markdown-body {
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
 	/* Markdown output is injected via {@html}, so it needs :global to be styled. */
 	.markdown-body :global(h1),
 	.markdown-body :global(h2),
