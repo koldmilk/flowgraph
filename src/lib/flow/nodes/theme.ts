@@ -1,4 +1,4 @@
-export type Accent = 'green' | 'red' | 'blurple';
+export type Accent = 'green' | 'red' | 'blurple' | 'purple' | 'gray';
 
 export const accentTheme: Record<
 	Accent,
@@ -24,5 +24,19 @@ export const accentTheme: Record<
 		border: 'border-[#5865f2]/40',
 		ring: 'ring-[#5865f2]',
 		handle: '!bg-[#5865f2]'
+	},
+	purple: {
+		header: 'bg-[#9b59d0]',
+		body: 'bg-[#332a3d]',
+		border: 'border-[#9b59d0]/40',
+		ring: 'ring-[#9b59d0]',
+		handle: '!bg-[#9b59d0]'
+	},
+	gray: {
+		header: 'bg-[#80848e]',
+		body: 'bg-[#33353b]',
+		border: 'border-[#80848e]/40',
+		ring: 'ring-[#80848e]',
+		handle: '!bg-[#80848e]'
 	}
 };

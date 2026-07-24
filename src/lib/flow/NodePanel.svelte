@@ -2,7 +2,12 @@
 	import type { Node } from '@xyflow/svelte';
 	import { scale } from 'svelte/transition';
 	import MarkdownEditor from './MarkdownEditor.svelte';
-	import { nodeCatalog, type SignalNodeType } from './nodeCatalog';
+	import {
+		nodeCatalog,
+		convertibleTypes,
+		type SignalNodeType,
+		type SwitchPin
+	} from './nodeCatalog';
 	import { nodeColors, defaultNodeColor } from './nodeColors';
 
 	let {
@@ -10,7 +15,10 @@
 		selectedCount,
 		collapsed = $bindable(false),
 		onupdate,
-		onconvert
+		onconvert,
+		onaddpin,
+		onremovepin,
+		onrenamepin
 	}: {
 		// The single selected signal node whose attributes we edit, or null when the selection
 		// isn't exactly one such node.
@@ -19,10 +27,20 @@
 		collapsed?: boolean;
 		onupdate: (id: string, data: Record<string, unknown>) => void;
 		onconvert: (id: string, type: SignalNodeType) => void;
+		onaddpin: (id: string, side: 'input' | 'output') => void;
+		onremovepin: (id: string, side: 'input' | 'output', pinId: string) => void;
+		onrenamepin: (id: string, side: 'input' | 'output', pinId: string, name: string) => void;
 	} = $props();
 
 	// The three convertible signal types, for the Type dropdown.
-	const signalTypes = Object.keys(nodeCatalog) as SignalNodeType[];
+	const signalTypes = convertibleTypes;
+
+	// The switch node swaps the Type dropdown for a Pins editor (it isn't convertible); the group node
+	// shows neither (it's a collapsed subgraph, edited by opening its tab).
+	const isSwitch = $derived(node?.type === 'switch');
+	const isGroup = $derived(node?.type === 'group');
+	const inputs = $derived((node?.data?.inputs as SwitchPin[] | undefined) ?? []);
+	const outputs = $derived((node?.data?.outputs as SwitchPin[] | undefined) ?? []);
 
 	const label = $derived((node?.data?.label as string | undefined) ?? '');
 	const description = $derived((node?.data?.description as string | undefined) ?? '');
@@ -42,14 +60,14 @@
 	);
 
 	// Each attribute section can be collapsed independently via its +/- toggle.
-	let open = $state({ type: true, name: true, description: true, color: true });
+	let open = $state({ type: true, name: true, description: true, color: true, pins: true });
 
 	// Custom (themed) dropdown for the Type selector — a native <select>'s option list can't be
 	// styled, so it renders square/light against our dark UI.
 	let typeMenuOpen = $state(false);
 </script>
 
-{#snippet sectionHeader(title: string, key: 'type' | 'name' | 'description' | 'color')}
+{#snippet sectionHeader(title: string, key: 'type' | 'name' | 'description' | 'color' | 'pins')}
 	<button
 		type="button"
 		class="mb-2.5 flex w-full items-center text-[11px] font-semibold tracking-wide text-[#949ba4] uppercase hover:text-[#dbdee1]"
@@ -60,6 +78,46 @@
 		<svg class="ml-auto h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 			<path d={open[key] ? 'M5 12h14' : 'M12 5v14M5 12h14'} stroke-linecap="round" />
 		</svg>
+	</button>
+{/snippet}
+
+<!-- One side of a switch node's pins: a rename field + remove button per pin, then an add button. -->
+{#snippet pinList(title: string, side: 'input' | 'output', pins: SwitchPin[])}
+	<div class="mb-1.5 text-[11px] font-semibold tracking-wide text-[#949ba4] uppercase">
+		{title}
+	</div>
+	<div class="flex flex-col gap-1.5">
+		{#each pins as pin (pin.id)}
+			<div class="flex items-center gap-1.5">
+				<input
+					type="text"
+					value={pin.name}
+					oninput={(e) => onrenamepin(node!.id, side, pin.id, e.currentTarget.value)}
+					class="min-w-0 flex-1 rounded-md border border-black/30 bg-[#1e1f22] px-2 py-1.5 text-sm text-[#dbdee1] outline-none focus:border-[#5865f2]"
+				/>
+				<button
+					type="button"
+					title="Remove pin"
+					aria-label="Remove pin"
+					onclick={() => onremovepin(node!.id, side, pin.id)}
+					class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[#949ba4] hover:bg-[#f23f42] hover:text-white"
+				>
+					<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<path d="M5 12h14" stroke-linecap="round" />
+					</svg>
+				</button>
+			</div>
+		{/each}
+	</div>
+	<button
+		type="button"
+		onclick={() => onaddpin(node!.id, side)}
+		class="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-white/15 px-2 py-1.5 text-sm text-[#949ba4] hover:border-[#5865f2] hover:text-[#dbdee1]"
+	>
+		<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M12 5v14M5 12h14" stroke-linecap="round" />
+		</svg>
+		Add {side}
 	</button>
 {/snippet}
 
@@ -152,6 +210,17 @@
 					{/if}
 				</div>
 
+				{#if isSwitch || isGroup}
+					<div class="block border-t border-white/10 pt-3">
+						{@render sectionHeader('Pins', 'pins')}
+						{#if open.pins}
+							{@render pinList('Inputs', 'input', inputs)}
+							<div class="mt-4">
+								{@render pinList('Outputs', 'output', outputs)}
+							</div>
+						{/if}
+					</div>
+				{:else}
 				<div class="block border-t border-white/10 pt-3">
 					{@render sectionHeader('Type', 'type')}
 					{#if open.type}
@@ -227,6 +296,7 @@
 						</div>
 					{/if}
 				</div>
+				{/if}
 			{:else}
 				<p class="mt-4 text-center text-sm text-[#949ba4]">
 					{selectedCount > 1 ? 'Multiple nodes selected' : 'No node selected'}

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { accentTheme } from './nodes/theme';
-	import { nodeCatalog, type SignalNodeType } from './nodeCatalog';
+	import { nodeCatalog, type PanelNodeType } from './nodeCatalog';
 
 	let {
 		x,
@@ -14,13 +14,13 @@
 		x: number;
 		y: number;
 		canPaste: boolean;
-		onadd: (type: SignalNodeType) => void;
+		onadd: (type: PanelNodeType) => void;
 		oncomment: () => void;
 		onpaste: () => void;
 		onclose: () => void;
 	} = $props();
 
-	const types: SignalNodeType[] = ['source', 'destination', 'sourceDestination'];
+	const types: PanelNodeType[] = ['source', 'destination', 'sourceDestination', 'switch'];
 </script>
 
 <svelte:window onkeydown={(event) => event.key === 'Escape' && onclose()} />

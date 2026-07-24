@@ -1,4 +1,4 @@
-import type { SignalNodeType } from './nodeCatalog';
+import type { PanelNodeType } from './nodeCatalog';
 import { hexToRgba } from './commentColors';
 
 // Node colors are chosen at runtime (from the attributes panel), so nodes style themselves with
@@ -19,10 +19,12 @@ export const nodeColors: NodeColor[] = [
 ];
 
 // The color a node falls back to when its data has none, keyed by type.
-export const defaultNodeColor: Record<SignalNodeType, string> = {
+export const defaultNodeColor: Record<PanelNodeType, string> = {
 	source: '#23a55a',
 	destination: '#f23f42',
-	sourceDestination: '#5865f2'
+	sourceDestination: '#5865f2',
+	switch: '#9b59d0',
+	group: '#80848e'
 };
 
 // Blend a color over a base by weight (amount = share of `hex`). Used to build the dark, tinted body

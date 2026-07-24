@@ -12,6 +12,7 @@
 		oncut,
 		onpaste,
 		oncomment,
+		oncollapse,
 		onconvert,
 		ondelete,
 		onclose
@@ -25,6 +26,7 @@
 		oncut: () => void;
 		onpaste: () => void;
 		oncomment: () => void;
+		oncollapse: () => void;
 		onconvert: (type: SignalNodeType) => void;
 		ondelete: () => void;
 		onclose: () => void;
@@ -104,6 +106,20 @@
 			<path d="M8 21l4-3" stroke-linecap="round" stroke-linejoin="round" />
 		</svg>
 		{label('Comment')}
+	</button>
+
+	<button
+		type="button"
+		class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[#dbdee1] hover:bg-[#35373c]"
+		onclick={oncollapse}
+	>
+		<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+			<rect x="3" y="3" width="7" height="7" rx="1.5" />
+			<rect x="14" y="3" width="7" height="7" rx="1.5" />
+			<rect x="3" y="14" width="7" height="7" rx="1.5" />
+			<rect x="14" y="14" width="7" height="7" rx="1.5" />
+		</svg>
+		Collapse to group
 	</button>
 
 	{#if convertTypes.length}

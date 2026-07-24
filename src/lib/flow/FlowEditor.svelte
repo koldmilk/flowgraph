@@ -16,6 +16,8 @@
 	import SourceNode from './nodes/SourceNode.svelte';
 	import DestinationNode from './nodes/DestinationNode.svelte';
 	import SourceDestinationNode from './nodes/SourceDestinationNode.svelte';
+	import SwitchNode from './nodes/SwitchNode.svelte';
+	import GroupNode from './nodes/GroupNode.svelte';
 	import RerouteNode from './nodes/RerouteNode.svelte';
 	import CommentNode from './nodes/CommentNode.svelte';
 	import SignalEdge from './SignalEdge.svelte';
@@ -24,7 +26,15 @@
 	import PaneContextMenu from './PaneContextMenu.svelte';
 	import StoreBridge from './StoreBridge.svelte';
 	import NodePanel from './NodePanel.svelte';
-	import { nodeCatalog, type SignalNodeType } from './nodeCatalog';
+	import GraphTabs from './GraphTabs.svelte';
+	import { tick } from 'svelte';
+	import {
+		nodeCatalog,
+		isConvertibleType,
+		type SignalNodeType,
+		type PanelNodeType,
+		type SwitchPin
+	} from './nodeCatalog';
 	import { defaultNodeColor } from './nodeColors';
 	import { DEFAULT_COMMENT_COLOR } from './commentColors';
 
@@ -32,6 +42,8 @@
 		source: SourceNode,
 		destination: DestinationNode,
 		sourceDestination: SourceDestinationNode,
+		switch: SwitchNode,
+		group: GroupNode,
 		reroute: RerouteNode,
 		comment: CommentNode
 	};
@@ -41,7 +53,14 @@
 		default: SignalEdge
 	};
 
-	let nodes = $state<Node[]>([
+	// --- Workspaces / tabs --------------------------------------------------------------------
+	// Each collapsed group node owns a nested graph (its own nodes/edges), stored here by id. The
+	// active graph is mirrored into `nodes`/`edges` (so all the editing logic below is unchanged); the
+	// others are parked in `graphs` until their tab is selected. 'main' is the always-present root.
+	type Viewport = { x: number; y: number; zoom: number };
+	type GraphMeta = { name: string; nodes: Node[]; edges: Edge[]; viewport?: Viewport };
+
+	const initialNodes: Node[] = [
 		{
 			id: 'camera-1',
 			type: 'source',
@@ -60,14 +79,89 @@
 			position: { x: 680, y: 120 },
 			data: { label: 'Destination', description: 'Description' }
 		}
-	]);
-
-	let edges = $state<Edge[]>([
+	];
+	const initialEdges: Edge[] = [
 		{ id: 'camera-1->router-1', source: 'camera-1', target: 'router-1', animated: true },
 		{ id: 'router-1->monitor-1', source: 'router-1', target: 'monitor-1', animated: true }
-	]);
+	];
 
-	const { screenToFlowPosition, deleteElements, getInternalNode } = useSvelteFlow();
+	let graphs = $state<Record<string, GraphMeta>>({
+		main: { name: 'Main', nodes: initialNodes, edges: initialEdges }
+	});
+	let activeGraphId = $state('main');
+	let openTabs = $state<string[]>(['main']);
+	let nodes = $state<Node[]>(initialNodes);
+	let edges = $state<Edge[]>(initialEdges);
+
+	const tabs = $derived(openTabs.map((id) => ({ id, name: graphs[id]?.name ?? 'Group' })));
+
+	const { screenToFlowPosition, deleteElements, getInternalNode, fitView, getViewport, setViewport } =
+		useSvelteFlow();
+
+	// A group pin's name follows its interface node: renaming the node inside the subgraph reconciles
+	// back up to the owning group's pin. Done on tab switch (rather than live) since the group isn't
+	// visible while its subgraph is open anyway.
+	function reconcilePins(subgraphId: string, subNodes: Node[]) {
+		const names = new Map<string, string>();
+		for (const n of subNodes) {
+			if (n.data?.groupInterface) names.set(n.id, (n.data?.label as string) ?? '');
+		}
+		if (names.size === 0) return;
+		for (const [gId, g] of Object.entries(graphs)) {
+			if (gId === subgraphId) continue;
+			let changed = false;
+			const sync = (list?: SwitchPin[]) =>
+				list?.map((p) => {
+					if (names.has(p.id) && names.get(p.id) !== p.name) {
+						changed = true;
+						return { ...p, name: names.get(p.id)! };
+					}
+					return p;
+				});
+			const newNodes = g.nodes.map((gn) => {
+				if (gn.type !== 'group' || gn.data?.graphId !== subgraphId) return gn;
+				return {
+					...gn,
+					data: {
+						...gn.data,
+						inputs: sync(gn.data?.inputs as SwitchPin[] | undefined),
+						outputs: sync(gn.data?.outputs as SwitchPin[] | undefined)
+					}
+				};
+			});
+			if (changed) graphs[gId] = { ...g, nodes: newNodes };
+		}
+	}
+
+	// Save the live nodes/edges (and pan/zoom) back onto the active graph, then load the target graph's.
+	async function switchTab(id: string) {
+		if (id === activeGraphId || !graphs[id]) return;
+		reconcilePins(activeGraphId, nodes);
+		graphs[activeGraphId] = { ...graphs[activeGraphId], nodes, edges, viewport: getViewport() };
+		activeGraphId = id;
+		nodes = graphs[id].nodes;
+		edges = graphs[id].edges;
+		const vp = graphs[id].viewport;
+		nodeMenu = null;
+		paneMenu = null;
+		connectionMenu = null;
+		await tick();
+		if (vp) setViewport(vp);
+		else fitView();
+	}
+
+	// Double-clicking a group node opens its subgraph in a tab (creating the tab the first time).
+	function openGroup(graphId: string) {
+		if (!graphs[graphId]) return;
+		if (!openTabs.includes(graphId)) openTabs = [...openTabs, graphId];
+		switchTab(graphId);
+	}
+
+	function closeTab(id: string) {
+		if (id === 'main') return;
+		if (activeGraphId === id) switchTab('main'); // persists this tab's edits before it's hidden
+		openTabs = openTabs.filter((t) => t !== id);
+	}
 	// The live store arrives via <StoreBridge> (a child of <SvelteFlow>); see that component for why.
 	let store = $state<ReturnType<typeof useStore> | null>(null);
 
@@ -87,6 +181,12 @@
 
 	function updateNodeData(id: string, data: Record<string, unknown>) {
 		nodes = nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...data } } : n));
+		// A group node's name is also its tab's name — keep them in sync when it's renamed.
+		if ('label' in data) {
+			const n = nodes.find((x) => x.id === id);
+			const gid = n?.type === 'group' ? (n.data?.graphId as string | undefined) : undefined;
+			if (gid && graphs[gid]) graphs[gid].name = (data.label as string)?.trim() || graphs[gid].name;
+		}
 	}
 
 	// Right-clicking a node opens a menu to delete it. If the clicked node is part of a
@@ -103,12 +203,23 @@
 		deleteElements({ nodes: ids.map((id) => ({ id })) });
 	}
 
+	// Double-clicking a group node dives into its subgraph. (zoomOnDoubleClick is off, so a second
+	// click just carries detail === 2.)
+	function handleNodeClick({ node, event }: { node: Node; event: MouseEvent | TouchEvent }) {
+		if (event.detail === 2 && node.type === 'group' && node.data?.graphId) {
+			openGroup(node.data.graphId as string);
+		}
+	}
+
 	// --- Convert node type -------------------------------------------------------------------
 	// Which signal types among the targeted nodes can still be converted to. Only the three
 	// signal node types are convertible (reroute/comment are excluded). When every targeted
 	// signal node already shares one type, that type is dropped (nothing to convert to).
 	function convertTypesFor(ids: string[]): SignalNodeType[] {
-		const targeted = nodes.filter((n) => ids.includes(n.id) && n.type != null && n.type in nodeCatalog);
+		// Interface nodes are locked to their pin's direction, so they aren't convertible.
+		const targeted = nodes.filter(
+			(n) => ids.includes(n.id) && isConvertibleType(n.type) && !n.data?.groupInterface
+		);
 		if (targeted.length === 0) return [];
 		const all: SignalNodeType[] = ['source', 'destination', 'sourceDestination'];
 		const present = new Set(targeted.map((n) => n.type));
@@ -120,7 +231,9 @@
 	// loses its input drops incoming wires.
 	function convertNodes(ids: string[], toType: SignalNodeType) {
 		const converted = new Set(
-			nodes.filter((n) => ids.includes(n.id) && n.type != null && n.type in nodeCatalog).map((n) => n.id)
+			nodes
+				.filter((n) => ids.includes(n.id) && isConvertibleType(n.type) && !n.data?.groupInterface)
+				.map((n) => n.id)
 		);
 		if (converted.size === 0) return;
 		const hasSource = toType !== 'destination'; // source + sourceDestination emit
@@ -137,6 +250,76 @@
 			if (converted.has(e.target) && !hasTarget) return false;
 			return true;
 		});
+	}
+
+	// --- Collapse to group ---------------------------------------------------------------------
+	// Move the targeted nodes (and the wiring purely between them) into a new nested graph, and drop a
+	// single group node in their place at the selection's centroid. Wires that crossed the selection
+	// boundary are dropped (v1) — the group node starts with one In/Out pin to be rewired by hand.
+	// Comments (and any interface nodes) are left behind — they aren't part of the signal flow.
+	function collapseSelection(ids?: string[]) {
+		const targetIds = new Set(ids ?? nodes.filter((n) => n.selected).map((n) => n.id));
+		const inner = nodes.filter(
+			(n) => targetIds.has(n.id) && n.type !== 'comment' && !n.data?.groupInterface
+		);
+		if (inner.length === 0) return;
+		const innerIds = new Set(inner.map((n) => n.id));
+
+		const internalEdges = edges.filter((e) => innerIds.has(e.source) && innerIds.has(e.target));
+
+		const cx = inner.reduce((s, n) => s + n.position.x, 0) / inner.length;
+		const cy = inner.reduce((s, n) => s + n.position.y, 0) / inner.length;
+
+		const graphId = crypto.randomUUID();
+		const groupId = crypto.randomUUID();
+
+		// The subgraph's real content, plus a source/destination interface node for each default pin.
+		const subNodes = inner.map((n) => ({ ...($state.snapshot(n) as unknown as Node), selected: false }));
+		const inPin = { id: crypto.randomUUID(), name: 'In 1' };
+		const outPin = { id: crypto.randomUUID(), name: 'Out 1' };
+		const inNode = makeInterfaceNode('input', inPin.id, inPin.name, interfacePosition(subNodes, 'input'));
+		const withIn = [...subNodes, inNode];
+		const outNode = makeInterfaceNode('output', outPin.id, outPin.name, interfacePosition(withIn, 'output'));
+
+		graphs[graphId] = {
+			name: 'Group',
+			nodes: [...withIn, outNode],
+			edges: internalEdges.map((e) => $state.snapshot(e) as unknown as Edge)
+		};
+
+		const groupNode: Node = {
+			id: groupId,
+			type: 'group',
+			position: { x: cx, y: cy },
+			data: {
+				label: 'Group',
+				description: '',
+				graphId,
+				color: defaultNodeColor.group,
+				inputs: [inPin],
+				outputs: [outPin]
+			},
+			selected: true
+		};
+
+		// Keep only nodes/edges that stay in this graph, then add the group node. Any edge touching an
+		// inner node (internal or boundary-crossing) is removed.
+		nodes = [
+			...nodes.filter((n) => !innerIds.has(n.id)).map((n) => (n.selected ? { ...n, selected: false } : n)),
+			groupNode
+		];
+		edges = edges.filter((e) => !innerIds.has(e.source) && !innerIds.has(e.target));
+	}
+
+	// Every subgraph id reachable from a graph (itself + nested groups), so deleting a group node can
+	// tear down all the graphs it owned.
+	function collectSubgraphIds(graphId: string, acc: Set<string>) {
+		const g = graphs[graphId];
+		if (!g || acc.has(graphId)) return;
+		acc.add(graphId);
+		for (const n of g.nodes) {
+			if (n.type === 'group' && n.data?.graphId) collectSubgraphIds(n.data.graphId as string, acc);
+		}
 	}
 
 	// --- Pane (empty space) context menu -------------------------------------------------------
@@ -171,16 +354,144 @@
 		paneMenu = { screenX: event.clientX, screenY: event.clientY, flowX: flow.x, flowY: flow.y };
 	}
 
-	function addNodeAt(type: SignalNodeType, flowX: number, flowY: number) {
+	// A fresh node's data: signal types just carry a label/description; a switch also starts with one
+	// named input and one named output pin, which the attributes panel can then grow or rename.
+	function initialData(type: PanelNodeType): Record<string, unknown> {
+		const base = { label: nodeCatalog[type].label, description: 'Description' };
+		if (type === 'switch') {
+			return {
+				...base,
+				inputs: [{ id: crypto.randomUUID(), name: 'In 1' }],
+				outputs: [{ id: crypto.randomUUID(), name: 'Out 1' }]
+			};
+		}
+		return base;
+	}
+
+	function addNodeAt(type: PanelNodeType, flowX: number, flowY: number) {
 		nodes = [
 			...nodes,
 			{
 				id: crypto.randomUUID(),
 				type,
 				position: { x: flowX - 95, y: flowY - 39 },
-				data: { label: nodeCatalog[type].label, description: 'Description' }
+				data: initialData(type)
 			}
 		];
+	}
+
+	// --- Switch / group pins -------------------------------------------------------------------
+	// A node owns two arrays of named pins (data.inputs / data.outputs). These edit them in place;
+	// removing a pin also prunes any edge wired to it, since its handle disappears.
+	//
+	// For a GROUP node each pin also has a counterpart node inside its subgraph — the point where the
+	// signal tunnels through the boundary: an input pin is a `source` inside (it feeds the subgraph),
+	// an output pin is a `destination` inside (it drains it). The counterpart shares the pin's id, so
+	// it's kept in lockstep and can only be removed by removing the pin (see handleBeforeDelete).
+	const pinKey = (side: 'input' | 'output') => (side === 'input' ? 'inputs' : 'outputs');
+
+	function pinsOf(node: Node, side: 'input' | 'output'): SwitchPin[] {
+		return (node.data?.[pinKey(side)] as SwitchPin[] | undefined) ?? [];
+	}
+
+	// Bounding box of some nodes (measured size when known, else a default node footprint).
+	function bounds(ns: Node[]) {
+		if (ns.length === 0) return { minX: 0, maxX: 0, minY: 0 };
+		const rects = ns.map(nodeRect);
+		return {
+			minX: Math.min(...rects.map((r) => r.x)),
+			maxX: Math.max(...rects.map((r) => r.x + r.w)),
+			minY: Math.min(...rects.map((r) => r.y))
+		};
+	}
+
+	// Where to drop a new interface node in a subgraph: inputs stack down the left of the real content,
+	// outputs down the right, so the tunnel nodes frame the graph.
+	function interfacePosition(subNodes: Node[], side: 'input' | 'output') {
+		const ifaces = subNodes.filter((n) => n.data?.groupInterface === side);
+		const others = subNodes.filter((n) => !n.data?.groupInterface);
+		const box = bounds(others.length ? others : subNodes);
+		const x = side === 'input' ? box.minX - 250 : box.maxX + 250;
+		return { x, y: box.minY + ifaces.length * 90 };
+	}
+
+	function makeInterfaceNode(side: 'input' | 'output', pinId: string, name: string, position: { x: number; y: number }): Node {
+		return {
+			id: pinId,
+			type: side === 'input' ? 'source' : 'destination',
+			position,
+			data: { label: name, description: '', groupInterface: side }
+		};
+	}
+
+	// The subgraph a group node owns, if any.
+	function subgraphOf(node: Node | undefined): string | undefined {
+		return node?.type === 'group' ? (node.data?.graphId as string | undefined) : undefined;
+	}
+
+	function addPin(id: string, side: 'input' | 'output') {
+		const node = nodes.find((n) => n.id === id);
+		if (!node) return;
+		const pinId = crypto.randomUUID();
+		const name = `${side === 'input' ? 'In' : 'Out'} ${pinsOf(node, side).length + 1}`;
+		nodes = nodes.map((n) =>
+			n.id === id
+				? { ...n, data: { ...n.data, [pinKey(side)]: [...pinsOf(n, side), { id: pinId, name }] } }
+				: n
+		);
+		const gid = subgraphOf(node);
+		if (gid && graphs[gid]) {
+			const g = graphs[gid];
+			const iface = makeInterfaceNode(side, pinId, name, interfacePosition(g.nodes, side));
+			graphs[gid] = { ...g, nodes: [...g.nodes, iface] };
+		}
+	}
+
+	function renamePin(id: string, side: 'input' | 'output', pinId: string, name: string) {
+		const node = nodes.find((n) => n.id === id);
+		nodes = nodes.map((n) =>
+			n.id === id
+				? {
+						...n,
+						data: {
+							...n.data,
+							[pinKey(side)]: pinsOf(n, side).map((p) => (p.id === pinId ? { ...p, name } : p))
+						}
+					}
+				: n
+		);
+		const gid = subgraphOf(node);
+		if (gid && graphs[gid]) {
+			graphs[gid] = {
+				...graphs[gid],
+				nodes: graphs[gid].nodes.map((n) =>
+					n.id === pinId ? { ...n, data: { ...n.data, label: name } } : n
+				)
+			};
+		}
+	}
+
+	function removePin(id: string, side: 'input' | 'output', pinId: string) {
+		const node = nodes.find((n) => n.id === id);
+		nodes = nodes.map((n) =>
+			n.id === id
+				? { ...n, data: { ...n.data, [pinKey(side)]: pinsOf(n, side).filter((p) => p.id !== pinId) } }
+				: n
+		);
+		edges = edges.filter((e) =>
+			side === 'input'
+				? !(e.target === id && (e.targetHandle ?? null) === pinId)
+				: !(e.source === id && (e.sourceHandle ?? null) === pinId)
+		);
+		// Drop the pin's interface node (and its wiring) from inside the group.
+		const gid = subgraphOf(node);
+		if (gid && graphs[gid]) {
+			graphs[gid] = {
+				...graphs[gid],
+				nodes: graphs[gid].nodes.filter((n) => n.id !== pinId),
+				edges: graphs[gid].edges.filter((e) => e.source !== pinId && e.target !== pinId)
+			};
+		}
 	}
 
 	// --- Copy / Cut / Paste -------------------------------------------------------------------
@@ -310,7 +621,7 @@
 				id,
 				type,
 				position: { x: flowX - 95, y: flowY - 39 },
-				data: { label: nodeCatalog[type].label, description: 'Description' }
+				data: initialData(type)
 			}
 		];
 
@@ -521,6 +832,14 @@
 			pasteClipboard(lastPointer);
 			return;
 		}
+		// Ctrl/Cmd+G collapses the current selection into a group node.
+		if (mod && key === 'g') {
+			if (nodes.some((n) => n.selected && n.type !== 'comment')) {
+				event.preventDefault();
+				collapseSelection();
+			}
+			return;
+		}
 
 		if (key === 'q' && !event.ctrlKey && !event.metaKey && !event.altKey) {
 			alignSelectedHorizontally();
@@ -576,10 +895,30 @@
 
 	// When a reroute knot is deleted, splice the spline back together so signal still flows from
 	// the upstream source to the downstream target (walking through any chained reroutes).
-	async function handleBeforeDelete({ nodes: delNodes }: { nodes: Node[]; edges: Edge[] }) {
-		const deletedIds = new Set(delNodes.map((n) => n.id));
-		const deletedReroutes = delNodes.filter((n) => n.type === 'reroute');
-		if (deletedReroutes.length === 0) return true;
+	async function handleBeforeDelete({ nodes: delNodes, edges: delEdges }: { nodes: Node[]; edges: Edge[] }) {
+		// A group pin's interface node can't be deleted directly — only by removing its pin. Drop any
+		// such node (and edges touching it) from the deletion, and let the rest through.
+		const blockedIds = new Set(delNodes.filter((n) => n.data?.groupInterface).map((n) => n.id));
+		const allowedNodes = blockedIds.size ? delNodes.filter((n) => !blockedIds.has(n.id)) : delNodes;
+		const allowedEdges = blockedIds.size
+			? delEdges.filter((e) => !blockedIds.has(e.source) && !blockedIds.has(e.target))
+			: delEdges;
+		const result = () => (blockedIds.size ? { nodes: allowedNodes, edges: allowedEdges } : true);
+
+		const deletedIds = new Set(allowedNodes.map((n) => n.id));
+
+		// Deleting a group node tears down its nested graph(s) and closes any open tabs for them.
+		const deletedGroups = allowedNodes.filter((n) => n.type === 'group' && n.data?.graphId);
+		if (deletedGroups.length) {
+			const gone = new Set<string>();
+			for (const g of deletedGroups) collectSubgraphIds(g.data!.graphId as string, gone);
+			graphs = Object.fromEntries(Object.entries(graphs).filter(([id]) => !gone.has(id)));
+			openTabs = openTabs.filter((t) => !gone.has(t));
+			if (gone.has(activeGraphId)) activeGraphId = 'main';
+		}
+
+		const deletedReroutes = allowedNodes.filter((n) => n.type === 'reroute');
+		if (deletedReroutes.length === 0) return result();
 
 		const bypass: Edge[] = [];
 		const seen = new Set<string>();
@@ -617,7 +956,7 @@
 			for (const b of bypass) disconnectExistingInput(b.target, b.targetHandle ?? null);
 			edges = [...edges, ...bypass];
 		}
-		return true;
+		return result();
 	}
 
 	// Auto-orient each reroute knot's pins toward the PINS they connect to (not node centers), so the
@@ -821,7 +1160,9 @@
 	oncontextmenu={handleWrapperContextMenu}
 />
 
-<div class="h-screen w-screen bg-[#1e1f22]" onmousedowncapture={handlePointerDownCapture}>
+<div class="flex h-screen w-screen flex-col bg-[#1e1f22]">
+	<GraphTabs {tabs} activeId={activeGraphId} onselect={switchTab} onclose={closeTab} />
+	<div class="relative flex-1" onmousedowncapture={handlePointerDownCapture}>
 	<SvelteFlow
 		bind:nodes
 		bind:edges
@@ -843,6 +1184,7 @@
 		onbeforedelete={handleBeforeDelete}
 		onconnectend={handleConnectEnd}
 		onedgeclick={handleEdgeClick}
+		onnodeclick={handleNodeClick}
 		onnodecontextmenu={handleNodeContextMenu}
 		onnodedragstart={handleNodeDragStart}
 		onnodedrag={handleNodeDrag}
@@ -860,6 +1202,9 @@
 		bind:collapsed={panelCollapsed}
 		onupdate={updateNodeData}
 		onconvert={(id, type) => convertNodes([id], type)}
+		onaddpin={addPin}
+		onremovepin={removePin}
+		onrenamepin={renamePin}
 	/>
 
 	{#if connectionMenu}
@@ -897,6 +1242,10 @@
 			}}
 			oncomment={() => {
 				createComment(nodeMenu!.nodeIds);
+				nodeMenu = null;
+			}}
+			oncollapse={() => {
+				collapseSelection(nodeMenu!.nodeIds);
 				nodeMenu = null;
 			}}
 			ondelete={() => {
@@ -939,6 +1288,7 @@
 			/>
 		</svg>
 	{/if}
+	</div>
 </div>
 
 <style>
@@ -980,6 +1330,15 @@
 	}
 	:global(.signal-flow .svelte-flow__node-comment .comment-interactive) {
 		pointer-events: auto;
+	}
+	/* Our node type is named 'group', which collides with xyflow's built-in 'group' node styling and
+	   picks up its default border/background wrapper. The GroupNode draws its own card, so strip that. */
+	:global(.signal-flow .svelte-flow__node-group),
+	:global(.signal-flow .svelte-flow__node-group.selected),
+	:global(.signal-flow .svelte-flow__node-group:focus),
+	:global(.signal-flow .svelte-flow__node-group:focus-visible) {
+		border: none;
+		background: transparent;
 	}
 	:global(.signal-flow .svelte-flow__controls) {
 		border-radius: 0.5rem;
