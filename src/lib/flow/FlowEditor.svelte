@@ -1,9 +1,8 @@
 <script lang="ts">
 	import {
 		SvelteFlow,
-		Background,
-		BackgroundVariant,
 		Controls,
+		MiniMap,
 		useSvelteFlow,
 		useStore,
 		getBezierPath,
@@ -18,6 +17,11 @@
 	import SourceDestinationNode from './nodes/SourceDestinationNode.svelte';
 	import SwitchNode from './nodes/SwitchNode.svelte';
 	import GroupNode from './nodes/GroupNode.svelte';
+	import TextNode from './nodes/TextNode.svelte';
+	import MediaNode from './nodes/MediaNode.svelte';
+	import YouTubeNode from './nodes/YouTubeNode.svelte';
+	import ArrowNode from './nodes/ArrowNode.svelte';
+	import IconNode from './nodes/IconNode.svelte';
 	import RerouteNode from './nodes/RerouteNode.svelte';
 	import CommentNode from './nodes/CommentNode.svelte';
 	import SignalEdge from './SignalEdge.svelte';
@@ -25,18 +29,32 @@
 	import NodeContextMenu from './NodeContextMenu.svelte';
 	import PaneContextMenu from './PaneContextMenu.svelte';
 	import StoreBridge from './StoreBridge.svelte';
+	import CanvasGrid from './CanvasGrid.svelte';
 	import NodePanel from './NodePanel.svelte';
+	import SettingsPanel from './SettingsPanel.svelte';
+	import OptionsIcon from './icons/OptionsIcon.svelte';
+	import SettingsIcon from './icons/SettingsIcon.svelte';
 	import GraphTabs from './GraphTabs.svelte';
 	import { tick } from 'svelte';
 	import {
 		nodeCatalog,
 		isConvertibleType,
+		type ConnectableNodeType,
 		type SignalNodeType,
 		type PanelNodeType,
 		type SwitchPin
 	} from './nodeCatalog';
 	import { defaultNodeColor } from './nodeColors';
 	import { DEFAULT_COMMENT_COLOR } from './commentColors';
+	import { readMediaFile, mediaKind, AUDIO_WIDTH, AUDIO_HEIGHT, type MediaKind } from './mediaFile';
+	import { YOUTUBE_WIDTH, YOUTUBE_HEIGHT } from './youtube';
+	import { DEFAULT_ICON, DEFAULT_ICON_STYLE } from './materialIcons';
+	import { settings } from './settings.svelte';
+
+	// Snapping is off unless a grid is handed over.
+	const snapGrid = $derived(
+		settings.snapToGrid ? ([settings.gridSize, settings.gridSize] as [number, number]) : undefined
+	);
 
 	const nodeTypes = {
 		source: SourceNode,
@@ -44,6 +62,11 @@
 		sourceDestination: SourceDestinationNode,
 		switch: SwitchNode,
 		group: GroupNode,
+		text: TextNode,
+		media: MediaNode,
+		youtube: YouTubeNode,
+		arrow: ArrowNode,
+		icon: IconNode,
 		reroute: RerouteNode,
 		comment: CommentNode
 	};
@@ -168,15 +191,81 @@
 	type NodeMenuState = { screenX: number; screenY: number; nodeIds: string[] };
 	let nodeMenu = $state<NodeMenuState | null>(null);
 
-	// --- Attributes panel ---------------------------------------------------------------------
-	// The panel edits a single selected signal node; comment/reroute and multi-selections show an
-	// empty state instead.
-	let panelCollapsed = $state(false);
+	// Annotations (comment frames, text notes) decorate the canvas rather than carrying signal, so
+	// they're skipped by anything that operates on the flow itself -- collapsing, most notably.
+	const ANNOTATION_TYPES = new Set(['comment', 'text', 'media', 'youtube', 'arrow']);
+	const isAnnotation = (n: Node) => ANNOTATION_TYPES.has(n.type ?? '');
+
+	// --- Side panels --------------------------------------------------------------------------
+	// Attributes and Settings share the top-right corner, so only one is open at a time; when neither
+	// is, the dock shows a round button per panel. The attributes panel edits a single selected node:
+	// any catalog type, plus comment frames (name + color only). Reroute knots and multi-selections
+	// show an empty state instead.
+	let openPanel = $state<'attributes' | 'settings' | null>('attributes');
+	// A media node's content is set on the node itself, but it can still carry a description -- one
+	// that only ever shows on hover, since text drawn over the picture would fight it.
+	const isPanelType = (t?: string | null) =>
+		t != null && t !== 'youtube' && (t in nodeCatalog || t === 'comment');
 	const selectedNodes = $derived(nodes.filter((n) => n.selected));
 	const panelNode = $derived(
-		selectedNodes.length === 1 && selectedNodes[0].type != null && selectedNodes[0].type in nodeCatalog
-			? selectedNodes[0]
-			: null
+		selectedNodes.length === 1 && isPanelType(selectedNodes[0].type) ? selectedNodes[0] : null
+	);
+
+	// A lone selected spline gets the panel to itself (color, flow direction, dashes). Nodes win when
+	// both are selected -- a box selection sweeps up the wires between the nodes it caught.
+	const selectedEdges = $derived(edges.filter((e) => e.selected));
+	const panelEdge = $derived(
+		selectedNodes.length === 0 && selectedEdges.length === 1 ? selectedEdges[0] : null
+	);
+
+	// A reroute knot is a bend in a wire, not a junction between two wires, so every segment between
+	// the same pair of real nodes shares one look. Walks outward from an edge through knots (following
+	// every branch a knot fans out into) and stops at the first real node in each direction.
+	function splineChain(edgeId: string): Set<string> {
+		const knots = new Set(nodes.filter((n) => n.type === 'reroute').map((n) => n.id));
+		const chain = new Set<string>();
+		const queue = [edgeId];
+		while (queue.length) {
+			const id = queue.pop()!;
+			if (chain.has(id)) continue;
+			chain.add(id);
+			const edge = edges.find((e) => e.id === id);
+			if (!edge) continue;
+			// Every other edge touching a knot at either end is part of the same wire.
+			for (const end of [edge.source, edge.target]) {
+				if (!knots.has(end)) continue;
+				for (const other of edges) {
+					if ((other.source === end || other.target === end) && !chain.has(other.id)) {
+						queue.push(other.id);
+					}
+				}
+			}
+		}
+		return chain;
+	}
+
+	function updateEdgeData(id: string, patch: Record<string, unknown>) {
+		const chain = splineChain(id);
+		edges = edges.map((e) => (chain.has(e.id) ? { ...e, data: { ...e.data, ...patch } } : e));
+	}
+
+	// A new wire onto or out of a knot joins the wire that's already there, rather than starting over
+	// at the default look.
+	function inheritedSplineData(source: string, target: string): Record<string, unknown> {
+		const knots = new Set(nodes.filter((n) => n.type === 'reroute').map((n) => n.id));
+		for (const end of [source, target]) {
+			if (!knots.has(end)) continue;
+			const neighbor = edges.find((e) => e.source === end || e.target === end);
+			if (neighbor?.data) return { ...neighbor.data };
+		}
+		return {};
+	}
+
+	// Selected nodes that collapseSelection would actually take (annotations ride along but don't
+	// count, and a group's interface nodes stay put), so the menus only offer Collapse when there's
+	// real flow content to collapse.
+	const collapsibleCount = $derived(
+		selectedNodes.filter((n) => !isAnnotation(n) && !n.data?.groupInterface).length
 	);
 
 	function updateNodeData(id: string, data: Record<string, unknown>) {
@@ -254,21 +343,23 @@
 
 	// --- Collapse to group ---------------------------------------------------------------------
 	// Move the targeted nodes (and the wiring purely between them) into a new nested graph, and drop a
-	// single group node in their place at the selection's centroid. Wires that crossed the selection
+	// single group node in their place at the flow nodes' centroid. Wires that crossed the selection
 	// boundary are dropped (v1) — the group node starts with one In/Out pin to be rewired by hand.
-	// Comments (and any interface nodes) are left behind — they aren't part of the signal flow.
+	// Selected annotations (comments, notes) travel in with the nodes they describe; a group's own
+	// interface nodes stay put, since they belong to the graph they're already in.
 	function collapseSelection(ids?: string[]) {
 		const targetIds = new Set(ids ?? nodes.filter((n) => n.selected).map((n) => n.id));
-		const inner = nodes.filter(
-			(n) => targetIds.has(n.id) && n.type !== 'comment' && !n.data?.groupInterface
-		);
-		if (inner.length === 0) return;
+		const inner = nodes.filter((n) => targetIds.has(n.id) && !n.data?.groupInterface);
+		// Annotations ride along but don't justify a group on their own.
+		const flowNodes = inner.filter((n) => !isAnnotation(n));
+		if (flowNodes.length === 0) return;
 		const innerIds = new Set(inner.map((n) => n.id));
 
 		const internalEdges = edges.filter((e) => innerIds.has(e.source) && innerIds.has(e.target));
 
-		const cx = inner.reduce((s, n) => s + n.position.x, 0) / inner.length;
-		const cy = inner.reduce((s, n) => s + n.position.y, 0) / inner.length;
+		// Positioned on the flow nodes alone -- a large comment frame shouldn't drag the centroid off.
+		const cx = flowNodes.reduce((s, n) => s + n.position.x, 0) / flowNodes.length;
+		const cy = flowNodes.reduce((s, n) => s + n.position.y, 0) / flowNodes.length;
 
 		const graphId = crypto.randomUUID();
 		const groupId = crypto.randomUUID();
@@ -358,6 +449,23 @@
 	// named input and one named output pin, which the attributes panel can then grow or rename.
 	function initialData(type: PanelNodeType): Record<string, unknown> {
 		const base = { label: nodeCatalog[type].label, description: 'Description' };
+		// A text box is only its markdown body -- no title, so it starts on placeholder note text.
+		if (type === 'text') return { description: 'New note' };
+		// Media nodes start empty and prompt for their content (a file picker / a link field).
+		if (type === 'media' || type === 'youtube') return {};
+		// An icon node starts unnamed -- the label is optional, and a blank one keeps it compact until
+		// there's a reason to title it.
+		if (type === 'icon') return { icon: DEFAULT_ICON, iconStyle: DEFAULT_ICON_STYLE };
+		// An arrow starts as a simple two-point diagonal; points are added by double-clicking it.
+		if (type === 'arrow') {
+			return {
+				points: [
+					{ x: 0, y: 0 },
+					{ x: 170, y: 90 }
+				],
+				color: defaultNodeColor.arrow
+			};
+		}
 		if (type === 'switch') {
 			return {
 				...base,
@@ -368,16 +476,81 @@
 		return base;
 	}
 
-	function addNodeAt(type: PanelNodeType, flowX: number, flowY: number) {
+	// The empty box a media node waits in before a file is chosen. Once one is, readMediaFile resizes
+	// the node to the file's own proportions, so these only have to look reasonable while empty.
+	function mediaPlaceholderSize(kind: MediaKind | undefined) {
+		if (kind === 'video') return { width: 320, height: 180 };
+		if (kind === 'audio') return { width: AUDIO_WIDTH, height: AUDIO_HEIGHT };
+		return { width: 260, height: 180 };
+	}
+
+	// `extra` seeds the new node's data -- the Add Media menu uses it to say which kind of file the
+	// placeholder should ask for.
+	function addNodeAt(
+		type: PanelNodeType,
+		flowX: number,
+		flowY: number,
+		extra: Record<string, unknown> = {}
+	) {
+		// Media and arrow nodes are sized rather than laid out by content, so they need explicit boxes.
+		const size =
+			type === 'media'
+				? mediaPlaceholderSize(extra.kind as MediaKind | undefined)
+				: type === 'youtube'
+					? { width: YOUTUBE_WIDTH, height: YOUTUBE_HEIGHT }
+					: type === 'arrow'
+						? { width: 170, height: 90 }
+						: {};
 		nodes = [
 			...nodes,
 			{
 				id: crypto.randomUUID(),
 				type,
 				position: { x: flowX - 95, y: flowY - 39 },
-				data: initialData(type)
+				data: { ...initialData(type), ...extra },
+				...size
 			}
 		];
+	}
+
+	// --- Dropping media onto the canvas ---------------------------------------------------------
+	// Each image, video or audio file lands as a media node at the drop point, sized from its natural
+	// dimensions by readMediaFile (shared with the media node's own picker).
+	function handleDragOver(event: DragEvent) {
+		// Only claim the drop when it actually carries files, so other drags behave normally.
+		if (!event.dataTransfer?.types.includes('Files')) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = 'copy';
+	}
+
+	async function handleDrop(event: DragEvent) {
+		const files = [...(event.dataTransfer?.files ?? [])].filter((f) => mediaKind(f) !== null);
+		if (files.length === 0) return;
+		event.preventDefault();
+
+		const origin = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+		let offset = 0;
+		for (const file of files) {
+			try {
+				const { kind, src, width, height } = await readMediaFile(file);
+				nodes = [
+					...nodes,
+					{
+						id: crypto.randomUUID(),
+						type: 'media',
+						// Centered on the cursor; multiple files cascade so they don't stack exactly.
+						position: { x: origin.x - width / 2 + offset, y: origin.y - height / 2 + offset },
+						width,
+						height,
+						data: { kind, src, alt: file.name }
+					}
+				];
+				offset += 28;
+			} catch {
+				// A file we can't decode (or one over the size limit) is skipped rather than aborting
+				// the whole drop.
+			}
+		}
 	}
 
 	// --- Switch / group pins -------------------------------------------------------------------
@@ -409,7 +582,8 @@
 	// outputs down the right, so the tunnel nodes frame the graph.
 	function interfacePosition(subNodes: Node[], side: 'input' | 'output') {
 		const ifaces = subNodes.filter((n) => n.data?.groupInterface === side);
-		const others = subNodes.filter((n) => !n.data?.groupInterface);
+		// Measured against the flow nodes only -- a big comment frame shouldn't push the pins far out.
+		const others = subNodes.filter((n) => !n.data?.groupInterface && !isAnnotation(n));
 		const box = bounds(others.length ? others : subNodes);
 		const x = side === 'input' ? box.minX - 250 : box.maxX + 250;
 		return { x, y: box.minY + ifaces.length * 90 };
@@ -571,9 +745,17 @@
 
 	let connectionMenu = $state<ConnectionMenuState | null>(null);
 
-	// An input (target) handle may only carry one incoming spline; a new connection replaces it.
-	// Output (source) handles are unrestricted and can fan out to many destinations.
+	// An input pin normally carries one incoming spline, so a new connection replaces what was there --
+	// unless the node has been set to accept several, or the global setting has lifted the rule for
+	// everything. Output (source) handles are unrestricted either way and can fan out freely.
+	function allowsMultipleInputs(targetNodeId: string) {
+		if (settings.allowMultipleInputs) return true;
+		return nodes.find((n) => n.id === targetNodeId)?.data?.multiInput === true;
+	}
+
+	// Every path that creates an edge routes through here, so the rule only has to live in one place.
 	function disconnectExistingInput(targetNodeId: string, targetHandleId: string | null) {
+		if (allowsMultipleInputs(targetNodeId)) return;
 		edges = edges.filter(
 			(edge) => !(edge.target === targetNodeId && (edge.targetHandle ?? null) === targetHandleId)
 		);
@@ -581,15 +763,21 @@
 
 	function handleBeforeConnect(connection: Connection): Edge {
 		disconnectExistingInput(connection.target, connection.targetHandle ?? null);
-		return { id: crypto.randomUUID(), animated: true, ...connection };
+		return {
+			id: crypto.randomUUID(),
+			animated: true,
+			data: inheritedSplineData(connection.source, connection.target),
+			...connection
+		};
 	}
 
-	const menuOptions = $derived.by((): SignalNodeType[] =>
+	// An icon node has one pin of each kind, so it can take the loose end from either direction.
+	const menuOptions = $derived.by((): ConnectableNodeType[] =>
 		!connectionMenu
 			? []
 			: connectionMenu.fromHandleType === 'source'
-				? ['destination', 'sourceDestination']
-				: ['source', 'sourceDestination']
+				? ['destination', 'sourceDestination', 'icon']
+				: ['source', 'sourceDestination', 'icon']
 	);
 
 	function handleConnectEnd(event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) {
@@ -610,7 +798,7 @@
 		};
 	}
 
-	function addNodeFromMenu(type: SignalNodeType) {
+	function addNodeFromMenu(type: ConnectableNodeType) {
 		if (!connectionMenu) return;
 		const { flowX, flowY, fromNodeId, fromHandleId, fromHandleType } = connectionMenu;
 
@@ -632,14 +820,16 @@
 						source: fromNodeId,
 						sourceHandle: fromHandleId,
 						target: id,
-						animated: true
+						animated: true,
+						data: inheritedSplineData(fromNodeId, id)
 					}
 				: {
 						id: crypto.randomUUID(),
 						source: id,
 						target: fromNodeId,
 						targetHandle: fromHandleId,
-						animated: true
+						animated: true,
+						data: inheritedSplineData(id, fromNodeId)
 					};
 
 		if (fromHandleType === 'target') {
@@ -800,6 +990,70 @@
 		commentDrag = null;
 	}
 
+	// --- Stacking order ---------------------------------------------------------------------------
+	// Overlapping decoration (images, video, notes) needs an explicit draw order. With every node on
+	// one layer the last one added wins, and whatever it covers can't be clicked at all -- so each
+	// node carries a zIndex and these rewrite the whole set. Rewriting rather than nudging one node's
+	// number keeps the values dense: "bring to front" repeated a hundred times still ends at n, not
+	// 100.
+	//
+	// Comment frames sit this out. They're backdrops, pinned behind the wires at creation, and they're
+	// click-through except for their title bar -- so they never cover what you're reaching for, and
+	// including them would only risk tinting the splines they're meant to sit behind.
+	type StackMove = 'front' | 'forward' | 'backward' | 'back';
+
+	// Visual order, back to front. Equal zIndex falls back to array order, because at the same
+	// stacking level that's exactly what the renderer paints.
+	function stackOrder(list: Node[]): Node[] {
+		return list
+			.map((n, i) => ({ n, i }))
+			.sort((a, b) => (a.n.zIndex ?? 0) - (b.n.zIndex ?? 0) || a.i - b.i)
+			.map(({ n }) => n);
+	}
+
+	// `ids` targets specific nodes (the context menu, which can act on an unselected node it was
+	// opened over); without it the current selection moves.
+	function restack(move: StackMove, ids?: string[]) {
+		const movable = nodes.filter((n) => n.type !== 'comment');
+		const wanted = ids ? new Set(ids) : null;
+		const picked = new Set(
+			movable.filter((n) => (wanted ? wanted.has(n.id) : n.selected)).map((n) => n.id)
+		);
+		// Nothing selected, or everything selected -- either way the order can't change.
+		if (picked.size === 0 || picked.size === movable.length) return;
+
+		const isPicked = (n: Node) => picked.has(n.id);
+		const order = stackOrder(movable);
+		let next: Node[];
+
+		if (move === 'front') {
+			next = [...order.filter((n) => !isPicked(n)), ...order.filter(isPicked)];
+		} else if (move === 'back') {
+			next = [...order.filter(isPicked), ...order.filter((n) => !isPicked(n))];
+		} else {
+			next = [...order];
+			if (move === 'forward') {
+				// Scan from the top down so a run of selected nodes shifts as a block instead of
+				// collapsing into a pile against the first unselected node above it.
+				for (let i = next.length - 2; i >= 0; i--) {
+					if (isPicked(next[i]) && !isPicked(next[i + 1])) {
+						[next[i], next[i + 1]] = [next[i + 1], next[i]];
+					}
+				}
+			} else {
+				for (let i = 1; i < next.length; i++) {
+					if (isPicked(next[i]) && !isPicked(next[i - 1])) {
+						[next[i], next[i - 1]] = [next[i - 1], next[i]];
+					}
+				}
+			}
+		}
+
+		// 1-based: zero would put a node level with the edge layer, which paints wires over it.
+		const z = new Map(next.map((n, i) => [n.id, i + 1]));
+		nodes = nodes.map((n) => (z.has(n.id) ? { ...n, zIndex: z.get(n.id) } : n));
+	}
+
 	function isEditableTarget(target: EventTarget | null) {
 		const el = target as HTMLElement | null;
 		return (
@@ -834,10 +1088,21 @@
 		}
 		// Ctrl/Cmd+G collapses the current selection into a group node.
 		if (mod && key === 'g') {
-			if (nodes.some((n) => n.selected && n.type !== 'comment')) {
+			if (nodes.some((n) => n.selected && !isAnnotation(n))) {
 				event.preventDefault();
 				collapseSelection();
 			}
+			return;
+		}
+
+		// Stacking order. Shift gives the bracket keys their punctuation twins, so match both:
+		// ] / [ step one layer, Shift+] / Shift+[ jump straight to the front or back.
+		const forward = key === ']' || key === '}';
+		const backward = key === '[' || key === '{';
+		if ((forward || backward) && !event.altKey) {
+			event.preventDefault();
+			if (event.shiftKey) restack(forward ? 'front' : 'back');
+			else restack(forward ? 'forward' : 'backward');
 			return;
 		}
 
@@ -872,8 +1137,10 @@
 
 		nodes = [
 			...nodes,
-			{ id: rerouteId, type: 'reroute', position: { x: pos.x - 8, y: pos.y - 8 }, data: {} }
+			// Offset by half the knot's size so it lands centered on the click.
+			{ id: rerouteId, type: 'reroute', position: { x: pos.x - 5, y: pos.y - 5 }, data: {} }
 		];
+		// Both halves inherit the spline's look, so a knot doesn't reset a colored or two-way wire.
 		edges = [
 			...edges.filter((e) => e.id !== edge.id),
 			{
@@ -881,14 +1148,16 @@
 				source: edge.source,
 				sourceHandle: edge.sourceHandle ?? null,
 				target: rerouteId,
-				animated
+				animated,
+				data: { ...edge.data }
 			},
 			{
 				id: crypto.randomUUID(),
 				source: rerouteId,
 				target: edge.target,
 				targetHandle: edge.targetHandle ?? null,
-				animated
+				animated,
+				data: { ...edge.data }
 			}
 		];
 	}
@@ -946,7 +1215,10 @@
 						sourceHandle: up.sourceHandle ?? null,
 						target: down.target,
 						targetHandle: down.targetHandle ?? null,
-						animated: true
+						animated: true,
+						// Keep the look of the spline that ran into the knot, so removing one is a no-op
+						// visually.
+						data: { ...(up.data ?? down.data) }
 					});
 				}
 			}
@@ -964,7 +1236,7 @@
 	// and a target's input pin on its left edge, so a node whose body is to the right can still have
 	// its input pin to the left -- the wire then correctly exits the knot leftward (Unreal-style).
 	// Recomputed live as any connected node (or the knot) moves.
-	const nodeW = (n: Node) => n.measured?.width ?? (n.type === 'reroute' ? 16 : 190);
+	const nodeW = (n: Node) => n.measured?.width ?? (n.type === 'reroute' ? 10 : 190);
 	const knotCenterX = (n: Node) => n.position.x + nodeW(n) / 2;
 	// Upstream node's OUTPUT pin x (right edge; a reroute's pin is its center).
 	const outputPinX = (n: Node) => (n.type === 'reroute' ? knotCenterX(n) : n.position.x + nodeW(n));
@@ -1026,6 +1298,8 @@
 		fixedY: number;
 		pointerX: number;
 		pointerY: number;
+		// The grabbed spline's look, carried across so re-landing it doesn't reset the wire.
+		data: Record<string, unknown>;
 	};
 
 	let reconnectDrag = $state<ReconnectDrag | null>(null);
@@ -1106,7 +1380,8 @@
 			fixedX: rect.left + rect.width / 2,
 			fixedY: rect.top + rect.height / 2,
 			pointerX: event.clientX,
-			pointerY: event.clientY
+			pointerY: event.clientY,
+			data: { ...connectedEdge.data }
 		};
 	}
 
@@ -1118,7 +1393,7 @@
 
 	function handleReconnectDragEnd(event: MouseEvent) {
 		if (!reconnectDrag) return;
-		const { fixedNodeId, fixedHandleId, fixedType } = reconnectDrag;
+		const { fixedNodeId, fixedHandleId, fixedType, data: grabbedData } = reconnectDrag;
 		reconnectDrag = null;
 
 		const dropEl = document
@@ -1147,7 +1422,8 @@
 				sourceHandle: sourceHandleId,
 				target: targetNodeId,
 				targetHandle: targetHandleId,
-				animated: true
+				animated: true,
+				data: grabbedData
 			}
 		];
 	}
@@ -1162,7 +1438,13 @@
 
 <div class="flex h-screen w-screen flex-col bg-[#1e1f22]">
 	<GraphTabs {tabs} activeId={activeGraphId} onselect={switchTab} onclose={closeTab} />
-	<div class="relative flex-1" onmousedowncapture={handlePointerDownCapture}>
+	<div
+		class="relative flex-1"
+		onmousedowncapture={handlePointerDownCapture}
+		ondragover={handleDragOver}
+		ondrop={handleDrop}
+		role="presentation"
+	>
 	<SvelteFlow
 		bind:nodes
 		bind:edges
@@ -1179,6 +1461,7 @@
 		maxZoom={2}
 		deleteKey={['Backspace', 'Delete']}
 		elevateNodesOnSelect={false}
+		{snapGrid}
 		proOptions={{ hideAttribution: true }}
 		onbeforeconnect={handleBeforeConnect}
 		onbeforedelete={handleBeforeDelete}
@@ -1189,23 +1472,64 @@
 		onnodedragstart={handleNodeDragStart}
 		onnodedrag={handleNodeDrag}
 		onnodedragstop={handleNodeDragStop}
-		class="signal-flow"
+		class="signal-flow {settings.animateSignal ? '' : 'static-splines'}"
 	>
 		<StoreBridge onready={(s) => (store = s)} />
-		<Background variant={BackgroundVariant.Dots} gap={24} size={1} patternColor="#3f4147" bgColor="#1e1f22" />
+		<CanvasGrid />
 		<Controls showLock={false} />
+		{#if settings.showMinimap}
+			<MiniMap
+				pannable
+				zoomable
+				bgColor="#1e1f22"
+				maskColor="rgba(0, 0, 0, 0.6)"
+				nodeColor={(n) => (n.data?.color as string | undefined) ?? '#4e5058'}
+				nodeStrokeColor="#1e1f22"
+				nodeBorderRadius={3}
+				class="rounded-lg border! border-black/40! bg-[#1e1f22]! shadow-2xl! shadow-black/60!"
+			/>
+		{/if}
 	</SvelteFlow>
 
-	<NodePanel
-		node={panelNode}
-		selectedCount={selectedNodes.length}
-		bind:collapsed={panelCollapsed}
-		onupdate={updateNodeData}
-		onconvert={(id, type) => convertNodes([id], type)}
-		onaddpin={addPin}
-		onremovepin={removePin}
-		onrenamepin={renamePin}
-	/>
+	{#if openPanel === 'attributes'}
+		<NodePanel
+			node={panelNode}
+			edge={panelEdge}
+			selectedCount={selectedNodes.length}
+			onclose={() => (openPanel = null)}
+			onupdate={updateNodeData}
+			onupdateedge={updateEdgeData}
+			onconvert={(id, type) => convertNodes([id], type)}
+			onaddpin={addPin}
+			onremovepin={removePin}
+			onrenamepin={renamePin}
+		/>
+	{:else if openPanel === 'settings'}
+		<SettingsPanel onclose={() => (openPanel = null)} />
+	{:else}
+		<!-- Dock: one round button per panel, stacked in the corner the panels open from. Hidden while
+		     a panel is open, since the panel covers this spot. -->
+		<div class="pointer-events-auto absolute top-4 right-4 z-30 flex flex-col gap-2">
+			<button
+				type="button"
+				class="flex h-11 w-11 items-center justify-center rounded-full border border-black/40 bg-[#2b2d31] text-[#dbdee1] shadow-2xl shadow-black/60 ring-1 ring-white/5 hover:bg-[#35373c]"
+				title="Show attributes"
+				aria-label="Show attributes"
+				onclick={() => (openPanel = 'attributes')}
+			>
+				<OptionsIcon class="h-5 w-5" />
+			</button>
+			<button
+				type="button"
+				class="flex h-11 w-11 items-center justify-center rounded-full border border-black/40 bg-[#2b2d31] text-[#dbdee1] shadow-2xl shadow-black/60 ring-1 ring-white/5 hover:bg-[#35373c]"
+				title="Show settings"
+				aria-label="Show settings"
+				onclick={() => (openPanel = 'settings')}
+			>
+				<SettingsIcon class="h-5 w-5" />
+			</button>
+		</div>
+	{/if}
 
 	{#if connectionMenu}
 		<ConnectionMenu
@@ -1248,6 +1572,10 @@
 				collapseSelection(nodeMenu!.nodeIds);
 				nodeMenu = null;
 			}}
+			onreorder={(move) => {
+				restack(move, nodeMenu!.nodeIds);
+				nodeMenu = null;
+			}}
 			ondelete={() => {
 				deleteNodes(nodeMenu!.nodeIds);
 				nodeMenu = null;
@@ -1261,12 +1589,17 @@
 			x={paneMenu.screenX}
 			y={paneMenu.screenY}
 			canPaste={!!clipboard && clipboard.nodes.length > 0}
-			onadd={(type) => {
-				addNodeAt(type, paneMenu!.flowX, paneMenu!.flowY);
+			selectedCount={collapsibleCount}
+			onadd={(type, extra) => {
+				addNodeAt(type, paneMenu!.flowX, paneMenu!.flowY, extra);
 				paneMenu = null;
 			}}
 			oncomment={() => {
 				createComment(undefined, { x: paneMenu!.flowX, y: paneMenu!.flowY });
+				paneMenu = null;
+			}}
+			oncollapse={() => {
+				collapseSelection();
 				paneMenu = null;
 			}}
 			onpaste={() => {
@@ -1283,7 +1616,7 @@
 				class="reconnect-path"
 				d={reconnectPath}
 				fill="none"
-				stroke="#80848e"
+				stroke="var(--spline)"
 				stroke-width="1.5"
 			/>
 		</svg>
@@ -1292,14 +1625,35 @@
 </div>
 
 <style>
+	/* One source of truth for the signal-wire look: the splines, the in-flight reconnect wire, and the
+	   reroute knots that sit on them all read these (the knots via inline styles). Declared on :root
+	   so the fixed reconnect overlay -- which lives outside the flow container -- inherits them too. */
+	:global(:root) {
+		--spline: #7fd6db;
+		--spline-glow-filter: drop-shadow(0 0 3px rgba(94, 226, 231, 0.7))
+			drop-shadow(0 0 7px rgba(94, 226, 231, 0.35));
+		--spline-glow-box:
+			0 0 3px rgba(94, 226, 231, 0.7), 0 0 7px rgba(94, 226, 231, 0.35);
+	}
 	:global(.signal-flow .svelte-flow__edge-path) {
-		stroke: #80848e;
+		stroke: var(--spline);
 		stroke-width: 1.5;
 		/* Soften the dash ends: a subtle bevel on the hard rectangles, small vs. the 8px dash length. */
 		stroke-linecap: round;
+		/* A soft cyan halo, so splines read as carrying signal rather than as flat lines. Two stacked
+		   shadows: a tight bright core plus a wider faint bloom around it. */
+		filter: var(--spline-glow-filter);
 	}
 	:global(.signal-flow .svelte-flow__edge.selected .svelte-flow__edge-path) {
 		stroke: #5865f2;
+		/* Selected wires keep the blurple stroke but glow wider so the selection reads at a glance. */
+		filter: drop-shadow(0 0 4px rgba(120, 132, 255, 0.8)) drop-shadow(0 0 9px rgba(88, 101, 242, 0.45));
+	}
+	/* A wire that runs through reroute knots is drawn as one path by its first segment, so selecting
+	   any segment of it has to highlight that path -- the rule above only sees its own edge. */
+	:global(.signal-flow .svelte-flow__edge-path.spline-selected) {
+		stroke: #5865f2;
+		filter: drop-shadow(0 0 4px rgba(120, 132, 255, 0.8)) drop-shadow(0 0 9px rgba(88, 101, 242, 0.45));
 	}
 	/* Hide the bounding box Svelte Flow draws around multi-selected nodes (group-drag still works). */
 	:global(.signal-flow .svelte-flow__selection-wrapper .svelte-flow__selection) {
@@ -1310,9 +1664,26 @@
 		stroke-dasharray: 8 6;
 		animation: signal-flow-dash 0.8s linear infinite;
 	}
+	/* "Animate signal" off (Settings): wires go solid. Done in CSS rather than by clearing each edge's
+	   `animated` flag, so the setting stays a view preference and the graph data is left alone. */
+	:global(.signal-flow.static-splines .svelte-flow__edge.animated path:not(.svelte-flow__edge-interaction)) {
+		stroke-dasharray: none;
+		animation: none;
+	}
+	/* Per-edge overrides (attributes panel). Both carry an extra class over the rules above so they
+	   win on specificity rather than on source order. */
+	:global(.signal-flow .svelte-flow__edge.animated path.svelte-flow__edge-path.spline-solid) {
+		stroke-dasharray: none;
+		animation: none;
+	}
+	/* Same keyframes, played backwards: dashes travel target -> source. */
+	:global(.signal-flow .svelte-flow__edge.animated path.svelte-flow__edge-path.spline-reverse) {
+		animation-direction: reverse;
+	}
 	.reconnect-path {
 		stroke-dasharray: 8 6;
 		stroke-linecap: round;
+		filter: var(--spline-glow-filter);
 		animation: signal-flow-dash 0.8s linear infinite;
 	}
 	@keyframes signal-flow-dash {
@@ -1329,6 +1700,15 @@
 		pointer-events: none;
 	}
 	:global(.signal-flow .svelte-flow__node-comment .comment-interactive) {
+		pointer-events: auto;
+	}
+	/* An arrow's bounding box is a big rectangle around a thin curve, so the node is click-through
+	   except on the line itself and its control dots -- otherwise it would swallow clicks meant for
+	   the canvas (or nodes) sitting in its empty corners. */
+	:global(.signal-flow .svelte-flow__node-arrow) {
+		pointer-events: none;
+	}
+	:global(.signal-flow .svelte-flow__node-arrow .arrow-interactive) {
 		pointer-events: auto;
 	}
 	/* Our node type is named 'group', which collides with xyflow's built-in 'group' node styling and

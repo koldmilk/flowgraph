@@ -6,9 +6,9 @@
 		type NodeProps,
 		type Node
 	} from '@xyflow/svelte';
-	import MarkdownView from '../MarkdownView.svelte';
+	import NodeDescription from './NodeDescription.svelte';
 	import { handleClass, handleStyle } from './handleStyle';
-	import { nodeColorStyles, defaultNodeColor, mixHex } from '../nodeColors';
+	import { defaultNodeColor, mixHex, selectionShadow } from '../nodeColors';
 	import type { SwitchPin } from '../nodeCatalog';
 
 	// A collapsed subgraph. graphId points at the nested graph its contents live in; double-clicking
@@ -17,6 +17,7 @@
 	type GroupNodeData = {
 		label: string;
 		description?: string;
+		fullDescription?: boolean;
 		color?: string;
 		graphId: string;
 		inputs?: SwitchPin[];
@@ -26,7 +27,6 @@
 	let { id, data, selected }: NodeProps<Node<GroupNodeData>> = $props();
 
 	const color = $derived(data.color ?? defaultNodeColor.group);
-	const styles = $derived(nodeColorStyles(color));
 	// A single flat fill, dulled a touch by blending toward the canvas bg, with a darker stroke a few
 	// shades below the fill so the node reads as one solid color with a clean outline.
 	const fill = $derived(mixHex(color, '#1e1f22', 0.82));
@@ -46,9 +46,7 @@
 <!-- Collapsed-subgraph node: a single flat color (a subgraph glyph in the header marks what it is). -->
 <div
 	class="relative min-w-47.5 max-w-59.5 rounded-[10px] border shadow-lg shadow-black/40"
-	style="background-color: {fill}; border-color: {stroke}; {selected
-		? `box-shadow: 0 0 0 2px ${styles.ring}, 0 10px 15px -3px rgba(0,0,0,0.45);`
-		: ''}"
+	style="background-color: {fill}; border-color: {stroke}; {selected ? selectionShadow : ''}"
 >
 	<div class="flex items-center gap-1.5 border-b border-black/20 px-3 py-1.5">
 		<svg
@@ -74,7 +72,11 @@
 	     the connection point sits on the border, level with the pin's name. -->
 	<div class="px-3 py-2">
 		{#if data.description}
-			<MarkdownView value={data.description} class="mb-2 text-xs text-white/80" />
+			<NodeDescription
+				value={data.description}
+				showFull={data.fullDescription}
+				class="mb-2 text-xs text-white/80"
+			/>
 		{/if}
 
 		<div class="flex justify-between gap-6">

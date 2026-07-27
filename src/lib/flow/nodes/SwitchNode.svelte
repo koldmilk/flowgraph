@@ -14,6 +14,7 @@
 	type SwitchNodeData = {
 		label: string;
 		description?: string;
+		fullDescription?: boolean;
 		color?: string;
 		inputs?: SwitchPin[];
 		outputs?: SwitchPin[];
@@ -37,7 +38,14 @@
 
 <!-- Each pin is a row; its Handle is nudged out onto the node's edge (left: -13px offsets the body's
      px-3 padding + border) so the connection point sits on the border, level with the pin's name. -->
-<NodeShell {id} label={data.label} description={data.description} {color} {selected}>
+<NodeShell
+	{id}
+	label={data.label}
+	description={data.description}
+	showFullDescription={data.fullDescription}
+	{color}
+	{selected}
+>
 	<div class="flex justify-between gap-6 {data.description ? 'mt-3' : ''}">
 		<div class="flex min-w-0 flex-col gap-2">
 			{#each inputs as pin (pin.id)}

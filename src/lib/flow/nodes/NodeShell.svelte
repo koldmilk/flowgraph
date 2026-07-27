@@ -1,13 +1,14 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { useSvelteFlow } from '@xyflow/svelte';
-	import MarkdownView from '../MarkdownView.svelte';
-	import { nodeColorStyles } from '../nodeColors';
+	import NodeDescription from './NodeDescription.svelte';
+	import { nodeColorStyles, selectionShadow } from '../nodeColors';
 
 	let {
 		id,
 		label,
 		description,
+		showFullDescription = false,
 		color,
 		selected = false,
 		children
@@ -15,6 +16,8 @@
 		id: string;
 		label: string;
 		description?: string;
+		// Off by default: the canvas shows a clamped description and the rest on hover.
+		showFullDescription?: boolean;
 		color: string;
 		selected?: boolean;
 		children?: Snippet;
@@ -61,7 +64,7 @@
 <!-- Grows to fit the title: wraps past the default width, up to 25% wider, then downward. -->
 <div
 	class="relative min-w-47.5 max-w-59.5 rounded-[10px] border shadow-lg shadow-black/40"
-	style="{styles.border} {selected ? `box-shadow: 0 0 0 2px ${styles.ring}, 0 10px 15px -3px rgba(0,0,0,0.45);` : ''}"
+	style="{styles.border} {selected ? selectionShadow : ''}"
 >
 	<div class="rounded-t-[9px] px-3 py-1.5" style={styles.header}>
 		{#if editing}
@@ -97,7 +100,11 @@
 	</div>
 	<div class="rounded-b-[9px] px-3 py-2" style={styles.body}>
 		{#if description}
-			<MarkdownView value={description} class="text-xs text-[#c5c8ce]" />
+			<NodeDescription
+				value={description}
+				showFull={showFullDescription}
+				class="text-xs text-[#c5c8ce]"
+			/>
 		{/if}
 		{@render children?.()}
 	</div>

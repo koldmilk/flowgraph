@@ -24,7 +24,12 @@ export const defaultNodeColor: Record<PanelNodeType, string> = {
 	destination: '#f23f42',
 	sourceDestination: '#5865f2',
 	switch: '#9b59d0',
-	group: '#80848e'
+	group: '#80848e',
+	text: '#e0a63b',
+	media: '#1ab4b0',
+	youtube: '#f23f42',
+	arrow: '#e0a63b',
+	icon: '#80848e'
 };
 
 // Blend a color over a base by weight (amount = share of `hex`). Used to build the dark, tinted body
@@ -40,13 +45,21 @@ export function mixHex(hex: string, base: string, amount: number): string {
 	return `rgb(${m(r1, r2)}, ${m(g1, g2)}, ${m(b1, b2)})`;
 }
 
+// The selection ring is deliberately NOT the node's own color -- a ring in the same hue as the node
+// barely reads against it. Soft cyan reads against every palette entry, and matches the signal
+// splines so a selected node glows the same way a live wire does.
+export const SELECTION_RING = '#7fd6db';
+export const SELECTION_GLOW = '0 0 6px rgba(94, 226, 231, 0.55), 0 0 14px rgba(94, 226, 231, 0.3)';
+
+// The full box-shadow a selected node wears: crisp ring, soft glow, then its usual drop shadow.
+export const selectionShadow = `box-shadow: 0 0 0 2px ${SELECTION_RING}, ${SELECTION_GLOW}, 0 10px 15px -3px rgba(0, 0, 0, 0.45);`;
+
 // Inline styles for a node's parts, all derived from one header hex.
 export function nodeColorStyles(hex: string) {
 	return {
 		header: `background-color: ${hex};`,
 		body: `background-color: ${mixHex(hex, '#1e1f22', 0.2)};`,
 		border: `border-color: ${hexToRgba(hex, 0.4)};`,
-		handle: `background-color: ${hex};`,
-		ring: hex
+		handle: `background-color: ${hex};`
 	};
 }

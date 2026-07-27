@@ -6,6 +6,7 @@
 		type NodeProps,
 		type Node
 	} from '@xyflow/svelte';
+	import { SELECTION_RING, SELECTION_GLOW } from '../nodeColors';
 
 	type RerouteData = { inputPos?: Position; outputPos?: Position };
 
@@ -30,11 +31,13 @@
 		'!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !pointer-events-none !left-1/2 !top-1/2 !right-auto !bottom-auto !m-0 !transform-none';
 </script>
 
-<!-- Unreal-style reroute knot: a spline appears to flow straight through it. -->
+<!-- Unreal-style reroute knot: a spline appears to flow straight through it. It wears the wire's own
+     cyan and glow (via the --spline vars) so the knot reads as part of the wire, not a bead on it. -->
 <div
-	class="h-4 w-4 rounded-full border-2 border-[#1e1f22] bg-[#80848e] {selected
-		? 'ring-2 ring-[#5865f2]'
-		: ''}"
+	class="h-2.5 w-2.5 rounded-full"
+	style="background-color: var(--spline); box-shadow: {selected
+		? `0 0 0 2px ${SELECTION_RING}, ${SELECTION_GLOW}`
+		: 'var(--spline-glow-box)'};"
 >
 	<Handle type="target" position={inputPos} class={handleClass} />
 	<Handle type="source" position={outputPos} class={handleClass} />

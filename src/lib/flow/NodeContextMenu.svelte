@@ -14,6 +14,7 @@
 		oncomment,
 		oncollapse,
 		onconvert,
+		onreorder,
 		ondelete,
 		onclose
 	}: {
@@ -28,24 +29,44 @@
 		oncomment: () => void;
 		oncollapse: () => void;
 		onconvert: (type: SignalNodeType) => void;
+		onreorder: (move: 'front' | 'forward' | 'backward' | 'back') => void;
 		ondelete: () => void;
 		onclose: () => void;
 	} = $props();
 
 	const label = (verb: string) => (count > 1 ? `${verb} ${count} nodes` : `${verb} node`);
 
-	// Convert flyout: opens on hover, to the right of the menu unless it would overflow the
-	// viewport, in which case it flips to the left. Sized to match the main menu width.
+	// Flyouts open on hover, to the right of the menu unless that would overflow the viewport, in
+	// which case they flip to the left. Sized to match the main menu width.
 	let menuEl: HTMLDivElement;
 	let submenuOpen = $state(false);
+	let orderOpen = $state(false);
 	let submenuSide = $state<'right' | 'left'>('right');
 	const SUBMENU_WIDTH = 208;
 
-	function openSubmenu() {
+	// Both flyouts share a side, since it depends only on where the menu itself sits.
+	function pickSide() {
 		const rect = menuEl.getBoundingClientRect();
 		submenuSide = rect.right + SUBMENU_WIDTH > window.innerWidth ? 'left' : 'right';
+	}
+
+	function openSubmenu() {
+		pickSide();
 		submenuOpen = true;
 	}
+
+	function openOrder() {
+		pickSide();
+		orderOpen = true;
+	}
+
+	// An arrow per direction; the two "all the way" moves get a wall for the arrow to stop against.
+	const orderItems = [
+		{ move: 'front', label: 'Bring to Front', hint: 'Shift+]', paths: ['M12 20V7', 'M7 12l5-5 5 5', 'M5 3h14'] },
+		{ move: 'forward', label: 'Bring Forward', hint: ']', paths: ['M12 19V7', 'M7 12l5-5 5 5'] },
+		{ move: 'backward', label: 'Send Backward', hint: '[', paths: ['M12 5v12', 'M7 12l5 5 5-5'] },
+		{ move: 'back', label: 'Send to Back', hint: 'Shift+[', paths: ['M12 4v13', 'M7 12l5 5 5-5', 'M5 21h14'] }
+	] as const;
 </script>
 
 <svelte:window onkeydown={(event) => event.key === 'Escape' && onclose()} />
@@ -119,7 +140,8 @@
 			<rect x="3" y="14" width="7" height="7" rx="1.5" />
 			<rect x="14" y="14" width="7" height="7" rx="1.5" />
 		</svg>
-		Collapse to group
+		Collapse Nodes
+		<span class="ml-auto text-xs text-[#949ba4]">Ctrl+G</span>
 	</button>
 
 	{#if convertTypes.length}
@@ -169,6 +191,51 @@
 			{/if}
 		</div>
 	{/if}
+
+	<!-- Order: where the node sits in the draw stack, so an image or note can be moved out from
+	     under whatever is covering it. -->
+	<div class="relative" role="presentation" onmouseenter={openOrder} onmouseleave={() => (orderOpen = false)}>
+		<button
+			type="button"
+			class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[#dbdee1] hover:bg-[#35373c] {orderOpen
+				? 'bg-[#35373c]'
+				: ''}"
+		>
+			<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<rect x="3" y="3" width="12" height="12" rx="2" stroke-linejoin="round" />
+				<path d="M9 21h10a2 2 0 0 0 2-2V9" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+			Order
+			<svg class="ml-auto h-4 w-4 text-[#949ba4]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</button>
+
+		{#if orderOpen}
+			<div
+				class="absolute top-0 min-w-52 rounded-lg border border-black/40 bg-[#2b2d31] p-1 shadow-2xl shadow-black/60"
+				class:left-full={submenuSide === 'right'}
+				class:right-full={submenuSide === 'left'}
+				style="{submenuSide === 'right' ? 'margin-left' : 'margin-right'}: -2px;"
+			>
+				{#each orderItems as item (item.move)}
+					<button
+						type="button"
+						class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[#dbdee1] hover:bg-[#35373c]"
+						onclick={() => onreorder(item.move)}
+					>
+						<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							{#each item.paths as d (d)}
+								<path {d} stroke-linecap="round" stroke-linejoin="round" />
+							{/each}
+						</svg>
+						{item.label}
+						<span class="ml-auto pl-3 text-xs text-[#949ba4]">{item.hint}</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
+	</div>
 
 	<div class="my-1 h-px bg-white/10"></div>
 

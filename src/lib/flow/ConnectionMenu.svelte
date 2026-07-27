@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { accentTheme } from './nodes/theme';
-	import { nodeCatalog, type SignalNodeType } from './nodeCatalog';
+	import { nodeCatalog, type ConnectableNodeType } from './nodeCatalog';
 
 	let {
 		x,
@@ -11,8 +11,8 @@
 	}: {
 		x: number;
 		y: number;
-		options: SignalNodeType[];
-		onselect: (type: SignalNodeType) => void;
+		options: ConnectableNodeType[];
+		onselect: (type: ConnectableNodeType) => void;
 		onclose: () => void;
 	} = $props();
 </script>

@@ -4,7 +4,10 @@
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
+		"icons": "node scripts/sync-icons.mjs",
+		"predev": "npm run icons",
 		"dev": "vite dev",
+		"prebuild": "npm run icons",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
@@ -23,6 +26,7 @@
 		"vite": "^8.0.16"
 	},
 	"dependencies": {
+		"@material-design-icons/svg": "^0.14.15",
 		"@xyflow/svelte": "^1.6.2",
 		"dompurify": "^3.4.12",
 		"marked": "^18.0.7"
